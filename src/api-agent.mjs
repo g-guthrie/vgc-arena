@@ -24,7 +24,7 @@ const DRAFT_TOOLS = new Set(['draft_concept', 'draft_set', 'draft_clear', 'draft
 const LIMITS = {teambuilding: 60, preview: 6, move: 6, switch: 4};
 const SUBMIT_FOR = {teambuilding: 'team_lock', preview: 'preview_submit', move: 'turn_submit', switch: 'turn_submit'};
 const KEEP_PRIOR = 4;     // messages kept from before the current decision
-const KEEP_TOOLS = 6;     // recent tool results kept whole within the current decision
+const KEEP_TOOLS = 10;    // recent tool results kept whole within the current decision
 
 function toolSchemas() {
   return TOOLS.filter(t => !HIDDEN.has(t.name)).map(t => {
@@ -65,7 +65,9 @@ export async function checkKey(provider, key) {
 }
 
 export class ApiAgent {
-  constructor({provider, key, model, effort, call, log = () => {}, onUsage = () => {}, maxTokens = 4000}) {
+  // Reasoning models spend output tokens thinking before they answer, so the
+  // ceiling is generous; a reply cut off before any answer is retried with more.
+  constructor({provider, key, model, effort, call, log = () => {}, onUsage = () => {}, maxTokens = 16000}) {
     if (!PROVIDERS[provider]) throw new Error(`Unknown provider ${provider}. Use openai or openrouter.`);
     if (!key) throw new Error('An API key is required.');
     if (!model) throw new Error('A model is required.');
@@ -116,7 +118,19 @@ export class ApiAgent {
         this.usage.cost += Number(data.usage?.cost) || 0;
         this.servedModel = data.model || this.servedModel;
         this.onUsage(this.usage, this.servedModel);
-        return data.choices?.[0]?.message || {};
+        const message = data.choices?.[0]?.message || {};
+        const cutOff = data.choices?.[0]?.finish_reason === 'length' && !(message.tool_calls || []).length;
+        if (cutOff && (body.max_tokens || body.max_completion_tokens || 0) < 64000) {
+          // Ran out of room while thinking: try again with double the ceiling.
+          if (body.max_completion_tokens) body.max_completion_tokens *= 2; else body.max_tokens = (body.max_tokens || this.maxTokens) * 2;
+          attempt--;
+          continue;
+        }
+        if (process.env.VGC_AGENT_DEBUG) {
+          const tc = (message.tool_calls || []).map(t => `${t.function?.name}(${String(t.function?.arguments || '').slice(0, 160)})`).join(' | ');
+          console.error(`[debug ${this.kind}] finish=${data.choices?.[0]?.finish_reason} tools=${tc || '—'} text=${JSON.stringify(String(message.content || '').slice(0, 300))}`);
+        }
+        return message;
       } catch (err) {
         lastErr = err;
         if (err.fatal) throw err;

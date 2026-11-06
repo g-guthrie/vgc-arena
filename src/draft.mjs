@@ -219,7 +219,7 @@ export function boardText(draft, {lockProblems} = {}) {
   if (rep.length) L.push('', 'TEAM REPORT', ...rep.map(x => `  ${x}`));
   if (lockProblems?.length) L.push('', 'LOCK REJECTED — fix these:', ...lockProblems.map(p => `  - ${p}`));
   L.push('', `NEXT → ${nextStep(draft)}`);
-  L.push(`Research used: ${draft.research} of ~${RESEARCH_BUDGET} suggested lookups.`);
+  L.push(`Research used: ${draft.research} of ~${RESEARCH_BUDGET} suggested lookups.${draft.researched?.length ? ` Already looked up: ${draft.researched.join(', ')} (no need to repeat).` : ''}`);
   return L.join('\n');
 }
 

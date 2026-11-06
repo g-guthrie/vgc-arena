@@ -292,7 +292,11 @@ export class Match extends EventEmitter {
   noteActivity(token, tool, args, ok) {
     let side;
     try { side = this.sideOf(token); } catch { return; }
-    if (this.phase === 'teambuilding' && RESEARCH_TOOLS.has(tool) && this.seats[side].draft) this.seats[side].draft.research++;
+    const d = this.seats[side].draft;
+    if (this.phase === 'teambuilding' && RESEARCH_TOOLS.has(tool) && d) {
+      d.research++;
+      if (tool === 'pokemon' && ok) { const sp = dex.species.get(args?.name); if (sp.exists && !(d.researched ||= []).includes(sp.name)) d.researched.push(sp.name); }
+    }
     const {seat, ...a} = args || {};
     const mon = t => { const l = String(t || '').trim().split('\n')[0].split('@')[0].trim(); const m = /\(([^)]+)\)/.exec(l); return (m && !/^[MF]$/.test(m[1]) ? m[1] : l.replace(/\(.*?\)/g, '')).trim(); };
     const act = x => (x.switch ? `↻ ${x.switch}` : `${x.move}${x.target ? `→${x.target}` : ''}${x.mega ? ' ✦' : ''}`);
