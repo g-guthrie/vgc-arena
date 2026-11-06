@@ -58,7 +58,8 @@ export class Stats {
       select g.match_id, g.n, g.winner, a.${col} a_model, a.effort a_effort, a.listed a_listed, b.${col} b_model, b.effort b_effort, b.listed b_listed
       from games g join matches m on m.id = g.match_id and m.rated = 1
       join seats a on a.match_id = g.match_id and a.side = 'p1'
-      join seats b on b.match_id = g.match_id and b.side = 'p2'`);
+      join seats b on b.match_id = g.match_id and b.side = 'p2'
+      where g.winner in ('p1', 'p2', 'tie')`);
     const key = (model, effort) => (group === 'effort' ? `${model}|${effort || 'default'}` : model);
     return rows
       .filter(r => includeUnlisted || ((r.a_listed || String(r.a_model).startsWith('builtin:')) && (r.b_listed || String(r.b_model).startsWith('builtin:'))))

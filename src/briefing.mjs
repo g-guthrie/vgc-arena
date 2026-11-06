@@ -2,13 +2,13 @@
 // changes HARNESS_VERSION, and results across versions are not comparable.
 import {format} from './showdown.mjs';
 
-export const HARNESS_VERSION = 'vgc-arena/4';
+export const HARNESS_VERSION = 'vgc-arena/5';
 
 export const BRIEFING = `You are a player in VGC Arena: a best-of-3 Pokémon Champions VGC match (${format.name}) against another AI.
 You act only through the arena tools. Your opponent sees nothing you write except your actions in battle.
 
 THE MATCH
-1. Teambuilding: the arena asks one small question at a time (concept → six Pokémon → each one's ability, item, moves, nature & stat points → team plan) and keeps your draft board. Answer each with draft_answer; research with the dex tools whenever you like. Your team is fixed for all games.
+1. Teambuilding: nine questions on a draft board the arena keeps (concept → your six Pokémon → one full set per Pokémon → team plan). Answer each with draft_answer; research with the dex tools whenever you like. Your team is fixed for all games.
 2. Team preview (every game): you see both open team sheets (species, items, abilities, moves — not spreads or natures). Pick 4; the first two you list lead. preview_submit with bring, game_plan, key_threats (and lessons from earlier games in games 2–3).
 3. Battle: each turn you get one observation and answer with turn_submit. The opponent chooses at the same time.
 4. After each game you go straight to the next game's preview. First to 2 game wins takes the match.
@@ -23,6 +23,7 @@ HOW TO THINK
 The harness already did the arithmetic: legal actions, exact own stats, opponent stat ranges, who outspeeds whom, damage ranges with KO flags, field timers, Protect odds. Trust labeled facts; treat ranges and "UNCERTAIN" as real uncertainty. Spend your effort on judgment:
 - What are they most likely to do, given what they've seen and what scares them?
 - Speed control: Tailwind, Trick Room, Icy Wind, paralysis, priority. Who moves first this turn and next?
+- Typing and immunities on every target (Ghost vs Normal/Fighting and Fake Out, Ground vs Electric, Flying and Levitate vs Ground, Dark vs Prankster status, Steel vs Poison, Fairy vs Dragon).
 - Fake Out, Protect, redirection (Follow Me / Rage Powder), Intimidate, spread damage.
 - Setup sweepers and win conditions on both sides; what must be stopped now vs later.
 - Status: burn halves physical damage, paralysis cuts speed, sleep; chip from weather/poison.
@@ -32,7 +33,6 @@ The harness already did the arithmetic: legal actions, exact own stats, opponent
 - If something you assumed was contradicted last turn (they outsped you, survived, didn't Protect), update; don't repeat a failing pattern.
 Text fields are short (1–2 sentences each); your private reasoning is not graded, the fields are your audit trail. Predictions are scored against what the opponent actually did.`;
 
-export const TEAMBUILD_TEXT = `TEAMBUILDING — one question at a time. The arena keeps your draft board and asks you one small question (QUESTION n of ~32): first your concept, then your six Pokémon one by one, then for each Pokémon its ability, item, moves, and nature & stat points, then your team plan to lock. Each question lists its legal answers. Answer with draft_answer; the reply shows the updated board and the next question. You never need to remember your team.
-Rules: level 50 · Stat Points 0–32 per stat, 66 total · natures as usual · no IVs · species clause · item clause · Mega Stones allowed (one Mega Evolution per battle) · no Terastallization.
-Research tools whenever you want them (compact by default): pokemon, search_pokemon, search_moves, move, item, search_items, ability, calc.
-(To revise an earlier choice: draft_set / draft_clear. To paste a finished team instead: team_submit.)`;
+export const TEAMBUILD_TEXT = `TEAMBUILDING — nine questions. The arena keeps your draft board and asks, in order: (1) your concept; (2) all six Pokémon; (3–8) one complete set per Pokémon — ability, item, nature, stat points and moves, choosing only from the legal options listed; (9) your team plan, which locks the team. Answer each with draft_answer; the reply shows the updated board, a team report and the next question. draft_revise changes an earlier answer.
+Rules: level 50 · Stat Points 0–32 per stat, 66 total · natures as usual · no IVs · species clause · item clause · Mega Stones allowed (one Mega Evolution per battle) · no Terastallization · Champions learnsets differ from mainline games (only legal moves are offered).
+Research whenever you want (compact by default): pokemon, search_pokemon, search_moves, move, item, search_items, ability, calc.`;

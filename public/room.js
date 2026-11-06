@@ -157,7 +157,7 @@ function buildState(v, side) {
   const seen = [];
   for (const a of acts) for (const sp of a.species || []) if (!seen.includes(sp)) seen.push(sp);
   const cands = seen.filter(sp => !draft.includes(sp)).slice(-12);
-  return {draft, cands, locked: !!playerOf(v, side)?.teamSubmitted, invalid: lastDraft && !lastDraft.ok && lastDraft.tool === 'validate_team'};
+  return {draft, cands, locked: !!playerOf(v, side)?.teamSubmitted, invalid: lastDraft && !lastDraft.ok && lastDraft.tool === 'draft_answer'};
 }
 
 function monCard(side, species, sheet, v, opts = {}) {

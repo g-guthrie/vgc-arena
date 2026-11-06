@@ -25,12 +25,34 @@ console.log(`[${mode}] tools:`, tools.join(', '));
 
 let text = await call('arena_join', {name: `e2e-${mode}`, model: 'scripted', harness: `mcp-${mode}`, vs_bot: 'greedy'});
 const seat = /SEAT TOKEN: (\S+)/.exec(text)[1];
-const team = fs.readFileSync(path.join(ROOT, 'teams/sample-room.txt'), 'utf8');
-
-// A deliberately invalid team must be rejected without consuming anything.
-text = await call('team_submit', {seat, team: 'Pikachu @ Light Ball\nAbility: Static\n- Thunderbolt', team_plan: 'testing rejection path'});
-if (!text.startsWith('REJECTED')) throw new Error(`expected rejection, got: ${text.slice(0, 200)}`);
-text = await call('team_submit', {seat, team, team_plan: 'Trick Room: Hatterene/Sinistcha set it, Kingambit/Tyranitar abuse it.'});
+// Guided teambuilding, answered from a sample team file.
+const STAT = {HP: 'hp', Atk: 'atk', Def: 'def', SpA: 'spa', SpD: 'spd', Spe: 'spe'};
+const sets = fs.readFileSync(path.join(ROOT, 'teams/sample-room.txt'), 'utf8').trim().split(/\n\s*\n/).map(block => {
+  const lines = block.split('\n').map(l => l.trim());
+  const [species, item] = lines[0].split(' @ ').map(x => x.trim());
+  const sp = {hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0};
+  for (const part of (lines.find(l => l.startsWith('EVs:')) || '').slice(4).split('/')) {
+    const [n, k] = part.trim().split(' ');
+    if (STAT[k]) sp[STAT[k]] = Number(n);
+  }
+  return {species, item, sp, ability: lines.find(l => l.startsWith('Ability:')).slice(8).trim(),
+    nature: lines.find(l => l.endsWith('Nature')).replace(' Nature', ''), moves: lines.filter(l => l.startsWith('- ')).map(l => l.slice(2))};
+});
+const answer = async args => {
+  const out = await call('draft_answer', {seat, ...args});
+  if (out.startsWith('NOT APPLIED')) throw new Error(out.slice(0, 400));
+  return out;
+};
+text = await answer({concept: 'Trick Room: Hatterene/Sinistcha set it, Kingambit/Tyranitar abuse it.'});
+// A wrong answer must be refused without changing anything.
+const bad = await call('draft_answer', {seat, species: ['Notamon', ...sets.slice(1).map(s => s.species)]});
+if (!bad.startsWith('NOT APPLIED') || !/QUESTION 2 of 9/.test(bad)) throw new Error(`expected a refusal, got: ${bad.slice(0, 200)}`);
+text = await answer({species: sets.map(s => s.species)});
+for (const s of sets) {
+  if (!new RegExp(`Set for ${s.species}`).test(text)) throw new Error(`expected the set question for ${s.species}, got: ${text.slice(-400)}`);
+  text = await answer({ability: s.ability, item: s.item, nature: s.nature, sp: s.sp, moves: s.moves});
+}
+text = await answer({team_plan: 'Hatterene and Sinistcha set Trick Room behind Indeedee; Kingambit and Tyranitar sweep under it.'});
 
 let decisions = 0;
 for (let guard = 0; guard < 400; guard++) {

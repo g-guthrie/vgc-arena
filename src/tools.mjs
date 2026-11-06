@@ -38,11 +38,6 @@ function stateText(st, extra = '') {
   return `${extra ? `${extra}\n\n` : ''}${head}\n${st.text}`;
 }
 
-function draftReply(res) {
-  if (res.error) return `NOT APPLIED — ${res.error}${res.board ? `\n\n${res.board}` : ''}`;
-  return `${res.notes?.length ? `Note: ${res.notes.join('; ')}.\n\n` : ''}${res.board}`;
-}
-
 async function afterSubmit(arena, seatToken, res, okText, tool) {
   if (res.error) {
     arena.matchFor(seatToken).noteRejection(seatToken, tool, res.error);
@@ -157,7 +152,7 @@ export const TOOLS = [
     async run(_, args) { return fmt(dexTools.searchMoves(args)); },
   },
   {name: 'move', description: 'Exact data for one move in this format (Champions PP, priority, target, effect).', input: {seat: optSeat, name: z.string()}, async run(_, a) { return fmt(dexTools.move(a)); }},
-  {name: 'search_items', description: 'List legal held items (optionally filtered).', input: {seat: optSeat, query: z.string().optional(), limit: z.number().optional()}, async run(_, a) { return fmt(dexTools.searchItems(a)); }},
+  {name: 'search_items', description: 'List legal held items (optionally filtered). Mega Stones are hidden unless mega: true.', input: {seat: optSeat, query: z.string().optional(), mega: z.boolean().optional(), limit: z.number().optional()}, async run(_, a) { return fmt(dexTools.searchItems(a)); }},
   {name: 'item', description: 'Exact effect of one item.', input: {seat: optSeat, name: z.string()}, async run(_, a) { return fmt(dexTools.item(a)); }},
   {name: 'ability', description: 'Exact effect of one ability.', input: {seat: optSeat, name: z.string()}, async run(_, a) { return fmt(dexTools.ability(a)); }},
   {
@@ -179,20 +174,13 @@ export const TOOLS = [
     async run(_, a) { return fmt(standaloneCalc(a)); },
   },
   // ---------------------------------------------------------------- submissions
-  {
-    name: 'validate_team',
-    description: 'Check a team against the format without submitting it. Returns problems, or computed stats for each Pokémon.',
-    input: {
-      seat: optSeat,team: z.string().describe('Showdown export text for all 6')},
-    async run(_, a) { const v = dexTools.validateTeam(a); return fmt({ok: v.ok, problems: v.problems, summary: v.ok ? v.summary : undefined}); },
-  },
   // ---------------------------------------------------------------- the draft board
   {
     name: 'draft_answer',
-    description: 'Answer the current teambuilding question (shown as QUESTION n of ~32). Send only the field(s) that question asks for: concept, species, ability, item, moves, nature+sp, or team_plan for the final lock. Returns the board and the next question.',
+    description: 'Answer the current teambuilding question (QUESTION n of 9). Send only the fields that question asks for: concept; species (all six); a full set (ability, item, nature, sp, moves); or team_plan to lock. Returns the board and the next question.',
     input: {
       seat,
-      concept: z.string().optional(), species: z.string().optional(), ability: z.string().optional(), item: z.string().optional(),
+      concept: z.string().optional(), species: z.array(z.string()).optional().describe('question 2: all six species'), ability: z.string().optional(), item: z.string().optional(),
       moves: z.array(z.string()).optional(), nature: z.string().optional(),
       sp: z.record(z.string(), z.number()).optional().describe('{"hp":…, "atk":…, "def":…, "spa":…, "spd":…, "spe":…} 0–32 each, 66 total'),
       team_plan: z.string().optional(),
@@ -206,6 +194,16 @@ export const TOOLS = [
     },
   },
   {
+    name: 'draft_revise',
+    description: 'Change an earlier teambuilding answer: {slot} reopens that Pokémon\'s set; {slot, species} swaps in a different Pokémon (its set is asked again).',
+    input: {seat, slot: z.number(), species: z.string().optional()},
+    async run(arena, a) {
+      const m = arena.matchFor(a.seat);
+      const res = m.draftRevise(a.seat, a);
+      return res.error ? `NOT APPLIED — ${res.error}\n\n${m.guidedText(a.seat)}` : m.guidedText(a.seat);
+    },
+  },
+  {
     name: 'decision_schema',
     description: 'JSON schema of the legal answers to your current decision (teambuilding question, team preview or turn), for programmatic clients.',
     input: {seat},
@@ -216,55 +214,6 @@ export const TOOLS = [
     description: 'The current teambuilding question as JSON, including a JSON schema of its legal answers (for programmatic clients).',
     input: {seat},
     async run(arena, a) { return JSON.stringify(arena.matchFor(a.seat).draftQuestion(a.seat)); },
-  },
-  {
-    name: 'draft_concept',
-    description: 'Teambuilding step 1: record your team concept (archetype, speed mode, win condition). Returns the draft board.',
-    input: {seat, concept: z.string().describe('2–3 sentences')},
-    async run(arena, a) { return draftReply(arena.matchFor(a.seat).draftConcept(a.seat, a)); },
-  },
-  {
-    name: 'draft_set',
-    description: 'Set or change one slot of your draft (1–6). Every field is optional and merges into the slot; it is checked immediately and errors come back with legal alternatives. Changing species resets the slot. Returns the board, a team report and the next step.',
-    input: {
-      seat, slot: z.number().describe('1–6'),
-      species: z.string().optional(), item: z.string().optional(), ability: z.string().optional(), nature: z.string().optional(),
-      sp: z.record(z.string(), z.number()).optional().describe('Stat points, e.g. {"hp": 32, "spa": 32, "spe": 2}: 0–32 each, 66 total'),
-      moves: z.array(z.string()).optional().describe('Up to 4 moves (replaces the slot\'s moves)'),
-    },
-    async run(arena, a) { return draftReply(arena.matchFor(a.seat).draftSet(a.seat, a)); },
-  },
-  {
-    name: 'draft_clear',
-    description: 'Empty one slot of your draft.',
-    input: {seat, slot: z.number()},
-    async run(arena, a) { return draftReply(arena.matchFor(a.seat).draftClear(a.seat, a)); },
-  },
-  {
-    name: 'draft_view',
-    description: 'Show your draft board, team report and next step.',
-    input: {seat},
-    async run(arena, a) { return draftReply(arena.matchFor(a.seat).draftView(a.seat)); },
-  },
-  {
-    name: 'team_lock',
-    description: 'Teambuilding step 5: lock the six on your draft board for the whole match. Checked by the format validator first; if anything is wrong nothing is locked and the problems are listed.',
-    input: {seat, team_plan: z.string().describe('2–4 sentences: modes, leads, win conditions, answers to top threats')},
-    async run(arena, a) {
-      const m = arena.matchFor(a.seat);
-      const res = m.teamLock(a.seat, a);
-      if (res.error) return `REJECTED — nothing was locked. ${res.error}\n\n${res.board || ''}`;
-      return afterSubmit(arena, a.seat, res, 'Team locked.', 'team_lock');
-    },
-  },
-  {
-    name: 'team_submit',
-    description: 'Alternative to the draft board: lock a whole team pasted as Showdown export text (validated first; rejected teams can be fixed and resubmitted).',
-    input: {seat, team: z.string(), team_plan: z.string().describe('2–4 sentences: modes, leads, win conditions, answers to top threats')},
-    async run(arena, a) {
-      const m = arena.matchFor(a.seat);
-      return afterSubmit(arena, a.seat, m.submitTeam(a.seat, a), 'Team accepted.', 'team_submit');
-    },
   },
   {
     name: 'preview_submit',

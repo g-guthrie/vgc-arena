@@ -4,7 +4,7 @@
 // the opponent's pending choice are never read into the output.
 import {dex, toID} from './showdown.mjs';
 import {statRange} from './dex-tools.mjs';
-import {damageRange, effectiveSpeed, effectiveSpeedRange} from './calc.mjs';
+import {damageRange, effectiveSpeed, effectiveSpeedRange, megaPreview} from './calc.mjs';
 import {describeLines} from './game.mjs';
 
 const STAT_SHORT = {atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe', accuracy: 'Acc', evasion: 'Eva'};
@@ -57,7 +57,7 @@ function sideConditionsText(side) {
 function fieldText(battle) {
   const out = [];
   const f = battle.field;
-  if (f.weather) out.push(`${dex.conditions.get(f.weather).name}${f.weatherState.duration ? ` (${f.weatherState.duration} turns left incl. this one)` : ''}`);
+  if (f.weather) out.push(`${weatherName(f.weather)}${f.weatherState.duration ? ` (${f.weatherState.duration} turns left incl. this one)` : ''}`);
   if (f.terrain) out.push(`${dex.conditions.get(f.terrain).name}${f.terrainState.duration ? ` (${f.terrainState.duration} turns left incl. this one)` : ''}`);
   for (const [id, state] of Object.entries(f.pseudoWeather)) {
     out.push(`${FIELD_NAMES[id] || dex.conditions.get(id).name || id}${state.duration ? ` — ${state.duration} turn${state.duration === 1 ? '' : 's'} left incl. this one` : ''}`);
@@ -65,7 +65,10 @@ function fieldText(battle) {
   return out;
 }
 
-function priorityOf(p, moveId) {
+const WEATHER = {sunnyday: 'Sun', desolateland: 'Harsh Sun', raindance: 'Rain', primordialsea: 'Heavy Rain', sandstorm: 'Sandstorm', snowscape: 'Snow', snow: 'Snow', deltastream: 'Strong Winds'};
+const weatherName = id => WEATHER[id] || dex.conditions.get(id).name;
+
+export function priorityOf(p, moveId) {
   const move = dex.moves.get(moveId);
   let pr = move.priority;
   const ability = toID(p.ability);
@@ -77,24 +80,33 @@ function priorityOf(p, moveId) {
 }
 
 // ---------------------------------------------------------------- facts
-function speedFacts(battle, mine, theirs) {
+function speedFacts(battle, mine, theirs, known = {}) {
   const tr = !!battle.field.pseudoWeather.trickroom;
   const rows = [];
   const all = [];
+  const range = t => effectiveSpeedRange(t, known[toID(t.species.name)]);
+  const narrowed = t => {
+    const b = known[toID(t.species.name)];
+    if (!b) return '';
+    const [lo, hi] = statRange(t.species, 'spe');
+    const parts = [b.lo > lo ? `≥${b.lo}` : '', b.hi < hi ? `≤${b.hi}` : ''].filter(Boolean);
+    return parts.length ? ` (stored Speed ${parts.join(' ')} from move order)` : '';
+  };
   for (const p of mine) all.push({label: `your ${speciesName(p)}`, lo: effectiveSpeed(p), hi: effectiveSpeed(p), exact: true});
   for (const p of theirs) {
-    const [lo, hi] = effectiveSpeedRange(p);
-    all.push({label: `their ${speciesName(p)}`, lo, hi, exact: false});
+    const [lo, hi] = range(p);
+    all.push({label: `their ${speciesName(p)}`, lo, hi, exact: lo === hi, note: narrowed(p)});
   }
   all.sort((a, b) => tr ? a.hi - b.hi : b.lo - a.lo);
-  rows.push(`Effective Speed now (boosts, paralysis, Tailwind, items, abilities applied; opponent = range over every legal spread): ${all.map(x => `${x.label} ${x.exact ? x.lo : `${x.lo}–${x.hi}`}`).join(' · ')}`);
+  rows.push(`Effective Speed now (boosts, paralysis, Tailwind, items, abilities applied; opponent = range over every legal spread, narrowed by the move order seen so far): ${all.map(x => `${x.label} ${x.lo === x.hi ? x.lo : `${x.lo}–${x.hi}`}${x.note || ''}`).join(' · ')}`);
   for (const m of mine) {
     const s = effectiveSpeed(m);
     for (const t of theirs) {
-      const [lo, hi] = effectiveSpeedRange(t);
+      const [lo, hi] = range(t);
       let verdict;
       if (s > hi) verdict = tr ? `they move first (Trick Room)` : `you move first`;
       else if (s < lo) verdict = tr ? `you move first (Trick Room)` : `they move first`;
+      else if (lo === hi) verdict = `SPEED TIE (${s}) — random`;
       else verdict = `UNCERTAIN — depends on their hidden spread (their range ${lo}–${hi} contains your ${s})`;
       rows.push(`your ${speciesName(m)} vs their ${speciesName(t)}: ${verdict}`);
     }
@@ -171,7 +183,47 @@ function damageFacts(battle, mine, theirs, oppSheetBySpecies) {
       if (parts.length) theirsOut.push(`their ${speciesName(a)} ${move.name}${isSpreadTag(move)}: ${parts.join(' | ')}`);
     }
   }
-  return {ours, theirs: theirsOut};
+  // What changes if a Mega-capable active Mega Evolves this turn.
+  const mega = [];
+  for (const p of [...mine, ...theirs]) {
+    const view = megaPreview(battle, p);
+    if (!view) continue;
+    const own = mine.includes(p);
+    const who = `${own ? 'your' : 'their'} ${view.mon.species.name}`;
+    const foes = (own ? theirs : mine).map(view.find).filter(Boolean);
+    const out = [];
+    const moves = own ? view.mon.moveSlots.map(m => m.id) : (oppSheetBySpecies(p)?.moves || []).map(toID);
+    for (const id of moves) {
+      const move = dex.moves.get(id);
+      if (move.category === 'Status') continue;
+      const parts = [];
+      for (const d of foes) {
+        const r = damageRange(view.mon.battle, view.mon, d, id, own ? 'defender' : 'attacker');
+        if (!r) continue;
+        const hp = own ? publicHpPercent(d) : (d.hp / d.maxhp) * 100;
+        parts.push(r.immune ? `${speciesName(d)} immune` : `${speciesName(d)} ${r1(r.lo)}–${r1(r.hi)}%${koTag(r, hp, d)}`);
+      }
+      if (parts.length) out.push(`${move.name}: ${parts.join(' | ')}`);
+    }
+    // Their strongest hits into the Mega form.
+    const into = [];
+    for (const a of (own ? theirs : mine).map(view.find).filter(Boolean)) {
+      const list = own ? (oppSheetBySpecies(a)?.moves || []).map(toID) : a.moveSlots.map(m => m.id);
+      let best = null;
+      for (const id of list) {
+        if (dex.moves.get(id).category === 'Status') continue;
+        const r = damageRange(view.mon.battle, a, view.mon, id, own ? 'attacker' : 'defender');
+        if (r && !r.immune && (!best || r.hi > best.r.hi)) best = {r, name: dex.moves.get(id).name};
+      }
+      if (best) into.push(`${own ? 'their' : 'your'} ${speciesName(a)} ${best.name} ${r1(best.r.lo)}–${r1(best.r.hi)}%`);
+    }
+    const field = view.mon.battle.field.weather && view.mon.battle.field.weather !== battle.field.weather ? ` (sets ${weatherName(view.mon.battle.field.weather)})` : '';
+    const st = view.mon.storedStats;
+    const [sLo, sHi] = own ? [effectiveSpeed(view.mon), effectiveSpeed(view.mon)] : effectiveSpeedRange(view.mon);
+    const spe = sLo === sHi ? `${sLo}` : `${sLo}–${sHi}`;
+    mega.push(`${who} if it Mega Evolves${field} — ${own ? `Atk ${st.atk} SpA ${st.spa}, ` : ''}effective Speed ${spe}, ${view.mon.getAbility().name}: ${out.join(' · ') || 'no damaging moves'}${into.length ? ` · taking: ${into.join(' · ')}` : ''}`);
+  }
+  return {ours, theirs: theirsOut, mega};
 }
 const isSpreadTag = m => m.target === 'allAdjacentFoes' ? ' (spread)' : m.target === 'allAdjacent' ? ' (spread, hits ally too)' : '';
 
@@ -445,7 +497,7 @@ export function renderObservation(game, sideId, ctx) {
   }
   if (mine.length && theirs.length && !illusionRisk) {
     L.push('', 'SPEED (same priority bracket):');
-    for (const row of speedFacts(battle, mine, theirs)) L.push(`  ${row}`);
+    for (const row of speedFacts(battle, mine, theirs, ctx.oppSpeedBounds)) L.push(`  ${row}`);
     const pri = priorityFacts(mine, theirs, sheetBySpecies);
     if (pri.length) L.push(`PRIORITY MOVES: ${pri.join(' · ')}`);
     if (options.kind === 'move') {
@@ -453,6 +505,10 @@ export function renderObservation(game, sideId, ctx) {
       L.push('', 'DAMAGE (% of target max HP; non-crit; opponent side = range over their possible spreads × rolls; Protect, Helping Hand, Intimidate-to-come not included):');
       for (const row of dmg.ours) L.push(`  ${row}`);
       for (const row of dmg.theirs) L.push(`  ${row}`);
+      if (dmg.mega.length) {
+        L.push('MEGA EVOLUTION (same numbers with the Mega form; Mega Evolution happens before moves):');
+        for (const row of dmg.mega) L.push(`  ${row}`);
+      }
     }
   }
 

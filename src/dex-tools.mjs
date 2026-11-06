@@ -126,7 +126,7 @@ export function rules() {
       'PP: Champions caps PP lower than mainline games; check move() for exact PP.',
       'Match: best of 3, same team all three games; you may change which 4 you bring and your leads every game.',
     ],
-    simulator: 'Pokemon Showdown (pinned commit); its validator is the source of truth — use validate_team.',
+    simulator: 'Pokemon Showdown (pinned commit); its validator is the source of truth and checks the team when it locks.',
   };
 }
 
@@ -227,10 +227,13 @@ export function item({name}) {
   return {name: i.name, description: longDesc(i), megaStoneFor: i.megaStone ? Object.keys(i.megaStone) : undefined};
 }
 
-export function searchItems({query, limit = 200} = {}) {
+export function searchItems({query, mega, limit = 200} = {}) {
   let list = legalItemList();
+  // Mega Stones are half the list; each Pokémon's own stone is offered in its set question.
+  const stones = list.filter(i => i.megaStone).length;
+  if (!mega && !/ite\b|mega|stone/i.test(String(query || ''))) list = list.filter(i => !i.megaStone);
   if (query) { const q = toID(query); list = list.filter(i => i.id.includes(q) || toID(shortDesc(i)).includes(q)); }
-  return {total: list.length, results: list.slice(0, limit).map(i => `${i.name} — ${shortDesc(i)}`)};
+  return {total: list.length, results: list.slice(0, limit).map(i => `${i.name} — ${shortDesc(i)}`), ...(mega ? {} : {note: `${stones} Mega Stones hidden (mega: true to list them).`})};
 }
 
 export function ability({name}) {

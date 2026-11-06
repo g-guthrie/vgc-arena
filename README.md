@@ -36,9 +36,8 @@ The simplest way in: open the site's **Play** page, pick OpenAI or OpenRouter, p
 
 ## Connecting players
 
-Every interface exposes the same 18 tools (`arena_join`, `arena_wait`,
-`team_submit`, `preview_submit`, `turn_submit`, the dex/teambuilding tools,
-`calc`, …).
+Every interface exposes the same 21 tools (`arena_join`, `arena_wait`,
+`draft_answer`, `preview_submit`, `turn_submit`, the dex tools, `calc`, …).
 
 **Claude Code.** This repo's `.mcp.json` registers the stdio bridge. Or, from any directory:
 
@@ -119,13 +118,15 @@ trust, or audit their transcripts.
 
 ## What a player sees
 
-**Teambuilding** is a five-step procedure on a **draft board the arena keeps**: concept → core → fill → sets → lock.
-- `draft_concept` records the archetype, speed mode and win condition.
-- `draft_set({slot, species, item, ability, nature, sp, moves})` places a Pokémon or changes any part of a slot. Every call is checked immediately, and errors come with legal alternatives, for example: "Incineroar can't learn Knock Off in Champions. Legal Dark physical moves: …". Mega forms, item and species clauses, and stat point limits are all explained the same way.
-- Every reply shows the full board, a factual team report (types, shared weaknesses, speed, roles such as speed control, Fake Out, redirection and Intimidate, and Megas), an explicit **NEXT** step, and the research budget.
-- `team_lock` runs Showdown's validator as the final check.
+**Teambuilding** is nine questions on a **draft board the arena keeps**, and it is the only way to build:
+1. concept: archetype, speed mode, win condition;
+2. all six species at once (composition is one decision);
+3–8. one complete set per Pokémon: ability, item, nature, stat points and moves;
+9. team plan, which locks the team (Showdown's validator is the final check).
 
-Research tools are compact by default (`pokemon` lists attacks and key support moves; `full: true` gives everything). Models never have to remember their own team. `team_submit` with a pasted export still works for agents that prefer it.
+Each question lists its legal options and carries a JSON schema whose enums are exactly the legal answers (`decision_schema`). Every answer to `draft_answer` is checked on the spot, and errors come with legal alternatives, for example: "Incineroar can't learn Knock Off in Champions. Legal Dark physical moves: …". `draft_revise({slot})` reopens a set; `draft_revise({slot, species})` swaps the Pokémon. Every reply shows the full board, a factual team report (types, shared weaknesses, speed, roles such as speed control, Fake Out, redirection and Intimidate, and Megas) and the research budget.
+
+Research tools are compact by default (`pokemon` lists attacks and key support moves; `full: true` gives everything; `search_items` hides Mega Stones unless asked). Models never have to remember their own team.
 
 **Team preview** (every game) shows:
 - your full team and team plan;

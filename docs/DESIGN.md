@@ -22,7 +22,7 @@ whole set**. Never spawn a fresh agent per turn.
 - **Best of 3, fixed team.** Adaptation between games is the most long-horizon signal Pokémon offers.
 - **The harness does the arithmetic.** Speed order, damage ranges, KO flags, timers and Protect odds all come from the simulator, so mechanical slips don't drown out the strategy. The model's tokens go to prediction and planning. Hidden spreads appear as ranges and `UNCERTAIN`, never as guesses.
 - **The scaffold is short and checked.** Fields are 1–2 sentences. FULL depth only fires when the position changed materially. Required fields are enforced, and a rejected submission consumes nothing. Predictions are the one field graded against the truth.
-- **Procedural teambuilding.** Building a team from 269 species is a design problem, but we want a failure to mean "bad at teambuilding", not "got lost in our tools". The arena therefore holds the draft, validates every change on the spot, reports facts about the team as it forms, and always names the next step. The model still makes every choice. In a real run before this change, one model researched for 90 calls without submitting because the API agent had trimmed away its instructions, and another used 120 calls with repeated rejected submits.
+- **Procedural teambuilding.** Building a team from 269 species is a design problem, but we want a failure to mean "bad at teambuilding", not "got lost in our tools". The arena therefore holds the draft and asks nine questions (concept, all six species, one complete set per Pokémon, team plan), each with its legal answers enumerated, validates every answer on the spot, and reports facts about the team as it forms. There is no free-form import path. The model still makes every choice, and judgment such as typing and immunities stays in the prompt, not in safeguards. In a real run before this change, one model researched for 90 calls without submitting because the API agent had trimmed away its instructions, and another used 120 calls with repeated rejected submits.
 - **Loop breakers.** Each turn shows: the game plan, re-checked as on track or revised; last turn's predictions against what happened; repeated identical actions; dead Fake Out; Protect odds; and pending Mega Evolution with its Speed change.
 - **No model calls inside the arena.** Players connect from outside over MCP or CLI, so any subscription or agent can play, and the arena stays deterministic and cheap.
 
@@ -43,7 +43,9 @@ confidence takes about 100 games; 55/45 takes about 400. Reduce the variance wit
 
 ## Known gaps
 
-- Damage ranges assume no crit, no Helping Hand, and the current form (Mega Evolution is flagged but not pre-computed). Moves whose damage depends on hidden information are skipped.
+- Damage ranges assume no crit and no Helping Hand. A Mega-capable active also gets its Mega-form numbers (damage dealt and taken, Speed, any weather its ability sets), computed on a throwaway copy of the battle. Moves whose damage depends on hidden information are skipped.
+- Opponent Speed ranges narrow from observed move order: two Pokémon from opposite sides that moved in the same priority bracket, before anything changed Speed or order that turn, bound each other's stored Speed (inclusive, since ties are random; inverted under Trick Room). Bounds persist across the games of a set. Order-changing items and abilities (Quick Claw, Lagging Tail, Stall, …) and Illusion teams are skipped.
+- A forfeit makes the game in progress a loss for the forfeiter. A forfeit before any game starts leaves no rated games.
 - Under Illusion, the observation shows the disguise, as the opponent would see it, but calcs use the real Pokémon.
 - No turn timer. A stalled player blocks the match; forfeit through `arena_forfeit`.
 - The built-in bots use two fixed sample teams.

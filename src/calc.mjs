@@ -118,11 +118,38 @@ export function effectiveSpeed(pokemon) {
   try { return sandboxed(pokemon.battle, 'max', () => pokemon.getStat('spe')); } catch { return pokemon.storedStats.spe; }
 }
 
-export function effectiveSpeedRange(pokemon) {
-  const [lo, hi] = statRange(pokemon.species, 'spe');
+// `bounds` optionally narrows the stored Speed (e.g. from observed move order).
+export function effectiveSpeedRange(pokemon, bounds) {
+  let [lo, hi] = statRange(pokemon.species, 'spe');
+  if (bounds) { lo = Math.max(lo, bounds.lo ?? lo); hi = Math.min(hi, bounds.hi ?? hi); }
   const a = withStats(pokemon, {spe: lo}, () => effectiveSpeed(pokemon));
   const b = withStats(pokemon, {spe: hi}, () => effectiveSpeed(pokemon));
   return [Math.min(a, b), Math.max(a, b)];
+}
+
+// A throwaway copy of the battle with `pokemon` Mega Evolved, as it would be
+// before moves this turn (Mega abilities such as Drought included). Returns
+// {mon, find(other)} mapping live Pokémon to their copies, or null.
+export function megaPreview(battle, pokemon) {
+  if (!pokemon.canMegaEvo || pokemon.species.isMega) return null;
+  try {
+    const copy = Battle.fromJSON(JSON.stringify(battle.toJSON()));
+    const find = p => copy.sides[p.side.n].active[p.position];
+    const mon = find(pokemon);
+    copy.actions.runMegaEvo(mon);
+    return mon.species.isMega ? {mon, find} : null;
+  } catch {
+    return null;
+  }
+}
+
+// Effective Speed right now for every stored Speed this species can have:
+// [[stored, effective], ...] ascending. Used to turn move order into bounds.
+export function speedTable(pokemon) {
+  const [lo, hi] = statRange(pokemon.species, 'spe');
+  const rows = [];
+  for (let s = lo; s <= hi; s++) rows.push([s, withStats(pokemon, {spe: s}, () => effectiveSpeed(pokemon))]);
+  return rows;
 }
 
 // ------------------------------------------------------------ standalone calc

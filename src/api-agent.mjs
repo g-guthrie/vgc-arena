@@ -21,9 +21,9 @@ export const PROVIDERS = {
 // Teambuilding is guided: one question per decision, answered through a per-question
 // draft_answer whose schema holds exactly the legal answers.
 const HIDDEN = new Set(['arena_join', 'arena_wait', 'arena_state', 'arena_forfeit', 'arena_models', 'match_transcript', 'team_submit', 'validate_team',
-  'draft_concept', 'draft_set', 'draft_clear', 'draft_view', 'team_lock', 'draft_question', 'draft_answer', 'decision_schema']);
+  'draft_revise', 'draft_question', 'draft_answer', 'decision_schema']);
 const SUBMITS = new Set(['draft_answer', 'preview_submit', 'turn_submit']);
-const LIMITS = {teambuilding: 8, preview: 6, move: 6, switch: 4};
+const LIMITS = {teambuilding: 12, preview: 6, move: 6, switch: 4};
 const SUBMIT_FOR = {teambuilding: 'draft_answer', preview: 'preview_submit', move: 'turn_submit', switch: 'turn_submit'};
 const KEEP_PRIOR = 4;     // messages kept from before the current decision
 const KEEP_TOOLS = 10;    // recent tool results kept whole within the current decision
@@ -84,12 +84,24 @@ export class ApiAgent {
     this.joined = new Promise((res, rej) => { this.resolveJoined = res; this.rejectJoined = rej; });
   }
 
-  async complete(force) {
+  // mode: 'required' (must call a tool), 'auto' (may answer in text), 'json'
+  // (tools stay declared for the history, but the reply must be plain JSON).
+  async complete(force, mode = 'required') {
     const cap = Number(process.env.VGC_API_MAX_USD || 3);
     if (this.usage.cost > cap) throw Object.assign(new Error(`spending cap of $${cap} reached for this match`), {fatal: true});
     // Only this phase's submit tool is offered, so a model can't reach for the wrong one.
     const tools = this.currentTools();
-    const body = {model: this.model, messages: this.compact(), tools, tool_choice: force ? {type: 'function', function: {name: force}} : 'required', parallel_tool_calls: false};
+    let messages = this.compact();
+    // Anthropic models (via OpenRouter) cache only what is marked: mark the
+    // current observation so the calls inside one decision reuse it cheaply.
+    if (this.provider === 'openrouter' && /^anthropic\//.test(this.model)) {
+      const at = messages.map(m => m.role).lastIndexOf('user');
+      if (at >= 0 && typeof messages[at].content === 'string') {
+        messages = messages.slice();
+        messages[at] = {...messages[at], content: [{type: 'text', text: messages[at].content, cache_control: {type: 'ephemeral'}}]};
+      }
+    }
+    const body = {model: this.model, messages, tools, tool_choice: force ? {type: 'function', function: {name: force}} : mode === 'json' ? 'none' : mode, parallel_tool_calls: false};
     if (this.provider === 'openai') {
       body.max_completion_tokens = this.maxTokens;
       if (this.effort) body.reasoning_effort = this.effort;
@@ -174,20 +186,26 @@ export class ApiAgent {
     for (let i = 0; i < limit; i++) {
       // Wrap up research in time: a nudge past the budget, then force the submit.
       if (kind === 'teambuilding' && i === Math.floor(limit * 0.6)) this.messages.push({role: 'user', content: 'Answer this question now with draft_answer.'});
-      const force = i >= limit - 2 ? SUBMIT_FOR[kind] : null;
-      const msg = await this.complete(force);
+      // Escalation for empty replies: required tools → optional tools → plain JSON.
+      const mode = nudges === 0 ? 'required' : nudges === 1 ? 'auto' : 'json';
+      const force = mode === 'required' && i >= limit - 2 ? SUBMIT_FOR[kind] : null;
+      const msg = await this.complete(force, mode);
       let calls = msg.tool_calls || [];
       // Fallback for models that answer in text: accept {"tool": …, "args": …}.
       if (!calls.length) {
         const fb = jsonToolCall(msg.content, this.currentTools());
         if (fb) calls = [{id: `json_${Date.now()}_${i}`, type: 'function', function: {name: fb.tool, arguments: JSON.stringify(fb.args)}}];
       }
-      this.messages.push({role: 'assistant', content: msg.content || null, ...(calls.length ? {tool_calls: calls} : {})});
       if (!calls.length) {
-        if (++nudges > 2) break;
-        this.messages.push({role: 'user', content: `Respond by calling a function (this decision ends with ${SUBMIT_FOR[kind]}). If you cannot call functions, reply with only {"tool": "${SUBMIT_FOR[kind]}", "args": {...}}.`});
+        if (++nudges > 3) break;
+        const answer = this.currentTools().find(t => t.function.name === SUBMIT_FOR[kind]);
+        if (msg.content) this.messages.push({role: 'assistant', content: msg.content});
+        this.messages.push({role: 'user', content: nudges >= 2
+          ? `Reply with ONLY a JSON object, no other text: {"tool": "${SUBMIT_FOR[kind]}", "args": <object matching this schema>}. Schema: ${JSON.stringify(answer?.function.parameters || {})}`
+          : `Respond by calling ${SUBMIT_FOR[kind]} now.`});
         continue;
       }
+      this.messages.push({role: 'assistant', content: msg.content || null, tool_calls: calls});
       let submitted = null;
       for (const tc of calls) {
         let args;

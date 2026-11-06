@@ -11,6 +11,7 @@ import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION} from './briefing.mjs';
 import {resolveModel} from './models.mjs';
 import {newDraft, setSlot, clearSlot, boardText, lockCheck, boardSummary} from './draft.mjs';
 import {question, questionText} from './guided.mjs';
+import {speedSnapshot, speedConstraints, applySpeedConstraints} from './speed-infer.mjs';
 
 const RESEARCH_TOOLS = new Set(['search_pokemon', 'pokemon', 'search_moves', 'move', 'search_items', 'item', 'ability', 'calc']);
 
@@ -43,6 +44,8 @@ export class Match extends EventEmitter {
     this.seats = {p1: null, p2: null};
     this.games = [];
     this.score = {p1: 0, p2: 0, ties: 0};
+    // Stored-Speed bounds inferred from move order, per side, kept across games.
+    this.speedBounds = {p1: {}, p2: {}};
     this.decisions = [];
     this.rejections = {p1: [], p2: []};
     this.activity = [];
@@ -211,16 +214,50 @@ export class Match extends EventEmitter {
   draftAnswer(token, args) {
     const d = this.draftSeat(token);
     if (d.error) return d;
-    const q = question(d.seat.draft);
-    const need = {concept: ['concept'], species: ['species'], ability: ['ability'], item: ['item'], moves: ['moves'], spread: ['nature', 'sp'], lock: ['team_plan']}[q.step];
+    const draft = d.seat.draft;
+    const q = question(draft);
+    const need = {concept: ['concept'], species: ['species'], set: ['ability', 'item', 'nature', 'sp', 'moves'], lock: ['team_plan']}[q.step];
     const missing = need.filter(k => args[k] === undefined || args[k] === null || args[k] === '');
     if (missing.length) return {error: `This question (${q.title}) needs: ${missing.join(', ')}.`, question: q};
     let r;
     if (q.step === 'concept') r = this.draftConcept(token, {concept: args.concept});
     else if (q.step === 'lock') r = this.teamLock(token, {team_plan: args.team_plan});
-    else r = this.draftSet(token, {slot: q.slot, ...Object.fromEntries(need.map(k => [k, args[k]]))});
+    else if (q.step === 'species') {
+      const list = [].concat(args.species);
+      if (list.length !== 6) return {error: `Send exactly six species (got ${list.length}).`, question: q};
+      // All or nothing: keep slots whose species is unchanged, place the rest.
+      const before = JSON.stringify(draft.slots);
+      const keep = draft.slots.map(s => s && list.some(x => toID(dex.species.get(x).name) === toID(s.species)) ? s : null);
+      draft.slots = keep;
+      const placed = new Set(keep.filter(Boolean).map(s => toID(s.species)));
+      const todo = list.filter(x => !placed.has(toID(dex.species.get(x).name)));
+      for (const name of todo) {
+        const slot = draft.slots.findIndex(s => !s) + 1;
+        const res = setSlot(draft, {slot, species: name});
+        if (res.error) { draft.slots = JSON.parse(before); this.emit('change'); return {error: `${res.error} Nothing was changed; send all six again.`, question: q}; }
+      }
+      this.emit('change');
+      r = {ok: true};
+    } else r = this.draftSet(token, {slot: q.slot, ...Object.fromEntries(need.map(k => [k, args[k]]))});
     if (r.error) return {...r, question: q};
     return {ok: true, locked: q.step === 'lock'};
+  }
+
+  // Reopen a set (slot only) or swap the Pokémon in a slot (slot + species).
+  draftRevise(token, {slot, species}) {
+    const d = this.draftSeat(token);
+    if (d.error) return d;
+    const n = Number(slot);
+    const cur = d.seat.draft.slots[n - 1];
+    if (!cur) return {error: `Slot ${slot} is empty.`};
+    if (species) {
+      // A fresh slot for the new Pokémon; restore the old one if the swap is illegal.
+      d.seat.draft.slots[n - 1] = null;
+      const r = setSlot(d.seat.draft, {slot: n, species});
+      if (r.error) { d.seat.draft.slots[n - 1] = cur; return {error: r.error}; }
+    } else d.seat.draft.slots[n - 1] = {species: cur.species, item: '', ability: '', nature: '', sp: {}, moves: []};
+    this.emit('change');
+    return {ok: true};
   }
 
   guidedText(token) {
@@ -329,8 +366,11 @@ export class Match extends EventEmitter {
     if (conv.error) return {error: conv.error};
     const turnBefore = game.turn;
     const logBefore = game.battle.log.length;
+    const resolves = obs.options.kind === 'move' && !game.needsChoice(other(side));
+    const snap = resolves ? speedSnapshot(game.battle) : null;
     const res = game.choose(side, conv.choice);
     if (!res.ok) return {error: res.error};
+    if (snap) applySpeedConstraints(this.speedBounds, speedConstraints(game.battle, snap));
     const record = {
       kind: obs.options.kind, depth, turn: turnBefore,
       payload: Object.fromEntries(Object.entries(payload).map(([k, v]) => [k, typeof v === 'string' ? clip(v) : v])),
@@ -355,6 +395,14 @@ export class Match extends EventEmitter {
     const side = this.sideOf(token);
     if (this.phase === 'finished') return {error: 'Match already finished.'};
     if (this.currentGame && !this.currentGame.ended) this.currentGame.forfeit(side);
+    // The game in progress (battle or preview) is a loss for the forfeiter, not a tie.
+    const g = this.game;
+    if (g && !g.winner) {
+      g.winner = other(side);
+      g.forfeit = side;
+      g.turns = g.game.turn || 0;
+      this.score[other(side)]++;
+    }
     this.finish(other(side), `${this.seats[side].name} forfeited`);
     return {ok: true};
   }
@@ -376,21 +424,21 @@ export class Match extends EventEmitter {
       search_pokemon: () => Object.entries(a).map(([k, v]) => `${k} ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', '),
       search_moves: () => Object.entries(a).map(([k, v]) => `${k} ${v}`).join(', '), search_items: () => a.query || 'all',
       calc: () => `${mon(a.attacker)} ${a.move} → ${mon(a.defender)}`,
-      validate_team: () => `${String(a.team || '').split(/\n\s*\n/).filter(Boolean).length} Pokémon`,
-      team_submit: () => 'locks the team', team_lock: () => 'locks the team', preview_submit: () => (a.bring || []).join(' · '),
-      draft_concept: () => String(a.concept || '').slice(0, 90),
-      draft_set: () => [`slot ${a.slot}`, a.species, a.item && `@ ${a.item}`, a.ability, a.nature, a.moves && [].concat(a.moves).join(', '), a.sp && 'stat points'].filter(Boolean).join(' · '),
-      draft_clear: () => `clears slot ${a.slot}`,
+      preview_submit: () => (a.bring || []).join(' · '),
+      draft_answer: () => (a.concept ? String(a.concept).slice(0, 90)
+        : a.species ? [].concat(a.species).join(' · ')
+        : a.team_plan ? 'locks the team'
+        : [a.item && `@ ${a.item}`, a.ability, a.nature, a.moves && [].concat(a.moves).join(', ')].filter(Boolean).join(' · ')),
+      draft_revise: () => `slot ${a.slot}${a.species ? ` → ${a.species}` : ' reopened'}`,
       turn_submit: () => (a.actions || []).map(act).join(' · '), arena_forfeit: () => 'forfeits',
     }[tool]?.() || '';
     // Pokémon this call was about, so the page can grow candidate cards.
-    const teamSpecies = t => String(t || '').split(/\n\s*\n/).map(b => mon(b)).filter(Boolean).map(x => (/\((.+)\)/.exec(x) ? /\((.+)\)/.exec(x)[1] : x));
     const speciesOf = {
       pokemon: () => [a.name], calc: () => [mon(a.attacker), mon(a.defender)],
-      validate_team: () => teamSpecies(a.team), team_submit: () => teamSpecies(a.team), draft_set: () => (a.species ? [a.species] : []),
+      draft_answer: () => (a.species ? [].concat(a.species) : []), draft_revise: () => (a.species ? [a.species] : []),
     }[tool]?.() || [];
     const species = speciesOf.map(x => { const sp = dex.species.get(x); return sp.exists ? sp.name : null; }).filter(Boolean);
-    this.activity.push({side, tool, ok, detail, species, draft: tool === 'validate_team' || tool === 'team_submit', t: Date.now(), game: this.game?.n || 0, turn: this.currentGame?.turn || 0});
+    this.activity.push({side, tool, ok, detail, species, draft: tool === 'draft_answer' || tool === 'draft_revise', t: Date.now(), game: this.game?.n || 0, turn: this.currentGame?.turn || 0});
     if (this.activity.length > 400) this.activity.splice(0, 100);
     this.emit('change');
   }
@@ -507,14 +555,14 @@ export class Match extends EventEmitter {
       for (const p of opp.active) {
         if (!p || p.fainted || p.species.isMega) continue;
         const form = megaForm(p);
-        if (form) alerts.push(`Their ${p.species.name} can Mega Evolve THIS turn into ${form}. Its damage and Speed above are for the current form; Mega Evolution applies before moves, including the Speed change.`);
+        if (form) alerts.push(`Their ${p.species.name} can Mega Evolve THIS turn into ${form}. Mega Evolution applies before moves, Speed included; its Mega numbers are under MEGA EVOLUTION.`);
       }
     }
     if (!game.battle.log.some(l => l.startsWith(`|-mega|${side}`))) {
       for (const p of game.side(side).active) {
         if (!p || p.fainted || p.species.isMega) continue;
         const form = megaForm(p);
-        if (form) alerts.push(`Your ${p.species.name} can Mega Evolve into ${form}. Numbers above are for the current form.`);
+        if (form) alerts.push(`Your ${p.species.name} can Mega Evolve into ${form}. Its Mega numbers are under MEGA EVOLUTION.`);
       }
     }
     const youMega = game.battle.log.some(l => l.startsWith(`|-mega|${side}`));
@@ -540,6 +588,7 @@ export class Match extends EventEmitter {
       predictionReview,
       oppSheet: this.seats[other(side)].sheet,
       oppSeen: view.oppSeen,
+      oppSpeedBounds: this.speedBounds[other(side)],
       alerts,
     });
     return obs;
