@@ -10,6 +10,7 @@
 //   OPENROUTER_API_KEY=… node src/api-agent.mjs --provider openrouter --model anthropic/claude-sonnet-4.6
 import {z} from 'zod';
 import {TOOLS} from './tools.mjs';
+import {GAME_BRIEFING} from './briefing.mjs';
 
 export const PROVIDERS = {
   openai: {base: process.env.VGC_OPENAI_BASE || 'https://api.openai.com/v1', label: 'OpenAI', env: 'OPENAI_API_KEY'},
@@ -44,7 +45,9 @@ function strictSchema(schema) {
 }
 
 const SYSTEM = `You are playing in VGC Arena through function calls. Each user message is the arena's current view of your match and ends with the question to answer.
-Research with the dex functions if you want, then answer with the one answer function offered. Its schema lists exactly the legal answers.`;
+Research with the dex functions if you want, then answer with the one answer function offered. Its schema lists exactly the legal answers.
+
+${GAME_BRIEFING}`;
 
 // Cheap key check before anyone waits on a match.
 export async function checkKey(provider, key) {

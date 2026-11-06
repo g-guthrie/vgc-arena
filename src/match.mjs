@@ -7,7 +7,7 @@ import {toID, FORMAT_ID, SHOWDOWN_COMMIT} from './showdown.mjs';
 import {validateTeam, openSheet, openSheetText, exportTeam, parseTeam} from './dex-tools.mjs';
 import {Game, describeLines} from './game.mjs';
 import {renderObservation, choiceFromAnswer, predictionEnum} from './observation.mjs';
-import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION} from './briefing.mjs';
+import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION, thinkText} from './briefing.mjs';
 import {resolveModel} from './models.mjs';
 import {newDraft, setSlot, clearSlot, boardText, lockCheck, boardSummary} from './draft.mjs';
 import {question, questionText} from './guided.mjs';
@@ -591,6 +591,7 @@ export class Match extends EventEmitter {
       L.push('', `OPPONENT'S OPEN TEAM SHEET:`, openSheetText(opp.sheet));
       L.push('', 'Opponent stat ranges at level 50 (any legal spread):');
       for (const s of opp.sheet) L.push(`  ${s.species}: ${rangesLine(s.species)}`);
+      L.push('', thinkText('preview'));
       L.push('', `ANSWER with preview_submit: {"bring": [4 of ${seat.team.map(s => `"${s.species}"`).join(', ')}], "game_plan": "…"}
   bring: the first two lead · game_plan: 2–3 sentences on leads, win condition and answers to their biggest threats${g.n > 1 ? ', and what you are changing from earlier games' : ''}`);
       return {...base, yourTurn: true, kind: 'preview', text: L.join('\n')};

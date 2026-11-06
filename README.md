@@ -144,9 +144,12 @@ You submit `bring` (4 Pokémon, first two lead) and `game_plan`.
 - **Speed order**: exact for you, a range for them that narrows as move order reveals their Speed, with `UNCERTAIN` where their hidden spread still decides it. Trick Room and Tailwind are applied;
 - **damage**: the two strongest hits each way per pair, with KO flags, computed by the simulator across every legal opponent spread (Focus Sash and Sturdy are flagged); anything else is one `calc` call away;
 - **if it Mega Evolves**: the same numbers, Speed and weather for a Mega-capable active's Mega form;
+- for switches, every option's matchup against their actives (best hit each way, Speed order). A mid-turn pivot (U-turn, Parting Shot, Eject Button) is labeled as such, since the incoming Pokémon still takes this turn's hits;
+- status counters a player could keep (turns asleep, Toxic stage) and each foe's last move;
+- **WEIGH BEFORE ANSWERING**: a short list of judgments for this kind of decision (move turn, replacement, pivot; every teambuilding question and team preview has its own). Players weigh them; they don't write about them;
 - **YOUR OPTIONS**: every legal action with a short ID, grouped by move, and an example answer.
 
-**The answer** is the same shape every turn: `actions` (one option ID per slot), `mega` (the slot that Mega Evolves, or null), `predictions` (each foe's sheet move or "switch", with confidence) and an optional one-sentence `reason`. Replacements after a faint take only `actions`. The text menu, the JSON schema (`decision_schema`) and the parser are built from one menu, so an answer is either an exact option or a rejection that lists the options.
+**The answer** is the same shape every turn: `predictions` first (each foe's sheet move or "switch", with confidence, so the read is committed before the move), `actions` (one option ID per slot), `mega` (the slot that Mega Evolves, or null) and an optional one-sentence `reason`. Replacements after a faint take only `actions`. The text menu, the JSON schema (`decision_schema`) and the parser are built from one menu, so an answer is either an exact option or a rejection that lists the options.
 
 Each field is 1–2 sentences. Predictions are scored against what the opponent actually chose.
 

@@ -6,6 +6,7 @@ import {dex, toID} from './showdown.mjs';
 import {statRange} from './dex-tools.mjs';
 import {damageRange, effectiveSpeed, effectiveSpeedRange, megaPreview} from './calc.mjs';
 import {describeLines} from './game.mjs';
+import {thinkText} from './briefing.mjs';
 
 const STAT_SHORT = {atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe', accuracy: 'Acc', evasion: 'Eva'};
 const STATUS_NAME = {brn: 'burned', par: 'paralyzed', slp: 'asleep', frz: 'frozen', psn: 'poisoned', tox: 'badly poisoned'};
@@ -17,6 +18,15 @@ const pct = n => `${Math.round(n)}%`;
 const r1 = n => (Math.round(n * 10) / 10).toFixed(n < 10 ? 1 : 0);
 const boostText = b => Object.entries(b).filter(([, v]) => v).map(([k, v]) => `${STAT_SHORT[k]} ${v > 0 ? '+' : ''}${v}`).join(', ');
 const speciesName = p => (p.illusion ? p.illusion.species.name : p.species.name);
+
+// Status as a player sees it, with the counters they can keep from the log.
+function statusText(p) {
+  if (!p.status) return '';
+  const st = p.statusState || {};
+  if (p.status === 'slp' && st.startTime) return `asleep (${Math.max(0, st.startTime - st.time)} turn${st.startTime - st.time === 1 ? '' : 's'} so far)`;
+  if (p.status === 'tox' && st.stage) return `badly poisoned (next tick ${Math.min(15, st.stage + 1)}/16)`;
+  return STATUS_NAME[p.status] || p.status;
+}
 
 function publicHpPercent(p) {
   if (p.fainted || p.hp <= 0) return 0;
@@ -169,6 +179,18 @@ function hitsLine(battle, a, d, moveIds, hidden, hpPct) {
   return parts.join(' · ');
 }
 
+// The single strongest hit, for compact matchup rows.
+function bestHit(battle, a, d, moveIds, hidden, hpPct) {
+  let best = null;
+  for (const id of moveIds) {
+    const move = dex.moves.get(id);
+    if (move.category === 'Status') continue;
+    const r = damageRange(battle, a, d, id, hidden);
+    if (r && !r.immune && (!best || r.hi > best.r.hi)) best = {move, r};
+  }
+  return best ? `${best.move.name} ${r1(best.r.lo)}–${r1(best.r.hi)}%${koTag(best.r, hpPct, d)}` : '';
+}
+
 function damageFacts(battle, mine, theirs, oppSheetBySpecies) {
   const sheetMoves = p => (oppSheetBySpecies(p)?.moves || []).map(toID);
   const ownMoves = p => p.moveSlots.map(m => m.id);
@@ -223,6 +245,7 @@ export function legalOptions(game, sideId) {
         slot: i + 1,
         species: side.active[i] ? speciesName(side.active[i]) : null,
         mustSwitch: !!must,
+        pivot: !!(must && side.active[i] && !side.active[i].fainted),
         switches: must ? switchable : [],
       })),
     };
@@ -336,17 +359,19 @@ export function optionFor(menu, action) {
 
 // JSON schema of a turn answer, from the same menu. Every field is listed as
 // required (nullable where optional) so providers can enforce it strictly.
+// Predictions come first, so a model commits to its read before its move.
 export function turnSchema(menu, sheetFor) {
-  const props = {
-    actions: {type: 'object', properties: Object.fromEntries(menu.slots.map(s => [`slot${s.slot}`, {type: 'string', enum: s.options.map(o => o.id), description: s.species}])),
-      required: menu.slots.map(s => `slot${s.slot}`), additionalProperties: false},
-  };
-  if (menu.megaSlots.length) props.mega = {type: ['integer', 'null'], enum: [...menu.megaSlots, null], description: 'Slot that Mega Evolves this turn, or null'};
+  const props = {};
   if (menu.predict.length) {
     props.predictions = {type: 'object', additionalProperties: false, required: menu.predict.map(f => f.foe),
       properties: Object.fromEntries(menu.predict.map(f => [f.foe, {type: 'object', additionalProperties: false, required: ['action', 'confidence'],
         properties: {action: {type: 'string', enum: predictionEnum(sheetFor(f.foe)), description: `What ${f.species} does this turn`}, confidence: {type: 'number', description: '0–1'}}}]))};
   }
+  Object.assign(props, {
+    actions: {type: 'object', properties: Object.fromEntries(menu.slots.map(s => [`slot${s.slot}`, {type: 'string', enum: s.options.map(o => o.id), description: s.species}])),
+      required: menu.slots.map(s => `slot${s.slot}`), additionalProperties: false},
+  });
+  if (menu.megaSlots.length) props.mega = {type: ['integer', 'null'], enum: [...menu.megaSlots, null], description: 'Slot that Mega Evolves this turn, or null'};
   props.reason = {type: ['string', 'null'], description: 'One sentence, optional'};
   return {type: 'object', properties: props, required: Object.keys(props), additionalProperties: false};
 }
@@ -362,14 +387,16 @@ function menuText(menu, sheetFor) {
     }
     for (const g of groups) L.push(`    ${g.name}: ${g.opts.map(o => (o.short ? `${o.id} ${o.short}` : o.id)).join(' · ')}`);
   }
-  const ex = {actions: Object.fromEntries(menu.slots.map(s => [`slot${s.slot}`, s.options[0]?.id]))};
-  if (menu.megaSlots.length) ex.mega = null;
+  const ex = {};
   if (menu.predict.length) ex.predictions = Object.fromEntries(menu.predict.map(f => [f.foe, {action: predictionEnum(sheetFor(f.foe))[0], confidence: 0.5}]));
+  ex.actions = Object.fromEntries(menu.slots.map(s => [`slot${s.slot}`, s.options[0]?.id]));
+  if (menu.megaSlots.length) ex.mega = null;
   ex.reason = '…';
   L.push('', `ANSWER with turn_submit: ${JSON.stringify(ex)}`);
-  const notes = ['actions: one option ID per slot'];
-  if (menu.megaSlots.length) notes.push(`mega: ${menu.megaSlots.join(' or ')} to Mega Evolve that slot this turn, else null`);
+  const notes = [];
   if (menu.predict.length) notes.push(`predictions: for each foe, one of its sheet moves or "switch", with your confidence 0–1 (scored against what they chose)`);
+  notes.push('actions: one option ID per slot');
+  if (menu.megaSlots.length) notes.push(`mega: ${menu.megaSlots.join(' or ')} to Mega Evolve that slot this turn, else null`);
   notes.push('reason: optional, one sentence');
   L.push(`  ${notes.join(' · ')}`);
   return L;
@@ -390,7 +417,10 @@ export function renderObservation(game, sideId, ctx) {
   const L = [];
   L.push(`=== ${ctx.header} · Turn ${battle.turn} ===`);
   if (options.kind === 'switch') {
-    L.push('DECISION: choose a replacement for your fainted / switching Pokémon.');
+    const pivot = options.slots.some(s => s.pivot);
+    L.push(pivot
+      ? `DECISION: mid-turn switch. Your ${options.slots.filter(s => s.pivot).map(s => s.species).join(' and ')} is leaving the field; choose who comes in. The rest of this turn still happens.`
+      : 'DECISION: replace your fainted Pokémon. The next turn starts after both sides have sent theirs in.');
   } else {
     L.push('DECISION: choose an action for each of your active Pokémon.');
   }
@@ -420,7 +450,7 @@ export function renderObservation(game, sideId, ctx) {
     if (!p || p.fainted) { L.push(`  [slot ${i + 1}] (empty)`); return; }
     const st = p.storedStats;
     const bits = [`HP ${p.hp}/${p.maxhp} (${pct((p.hp / p.maxhp) * 100)})`];
-    if (p.status) bits.push(STATUS_NAME[p.status] || p.status);
+    if (p.status) bits.push(statusText(p));
     const boosts = boostText(p.boosts);
     if (boosts) bits.push(`boosts ${boosts}`);
     bits.push(`item ${p.item ? dex.items.get(p.item).name : '(none)'}`);
@@ -434,7 +464,7 @@ export function renderObservation(game, sideId, ctx) {
     if (p.activeMoveActions > 0 && p.moveSlots.some(m => m.id === 'fakeout' || m.id === 'firstimpression')) L.push('      note: Fake Out / First Impression only work on its first turn out — they will fail now.');
   });
   const bench = me.pokemon.filter(p => !p.isActive);
-  L.push(`YOUR BENCH: ${bench.length ? bench.map(p => p.fainted ? `${p.species.name} (fainted)` : `${p.species.name} ${pct((p.hp / p.maxhp) * 100)}${p.status ? ` ${STATUS_NAME[p.status]}` : ''} @ ${p.item ? dex.items.get(p.item).name : '(none)'}`).join(' · ') : 'none'}`);
+  L.push(`YOUR BENCH: ${bench.length ? bench.map(p => p.fainted ? `${p.species.name} (fainted)` : `${p.species.name} ${pct((p.hp / p.maxhp) * 100)}${p.status ? ` ${statusText(p)}` : ''} @ ${p.item ? dex.items.get(p.item).name : '(none)'}`).join(' · ') : 'none'}`);
 
   // Opponent
   L.push('', 'OPPONENT ACTIVE (open team sheet + public info; spreads hidden):');
@@ -442,7 +472,7 @@ export function renderObservation(game, sideId, ctx) {
     if (!p || p.fainted) { L.push(`  [foe${i + 1}] (empty)`); return; }
     const sheet = sheetBySpecies(p);
     const bits = [`HP ${publicHpPercent(p)}%`];
-    if (p.status) bits.push(STATUS_NAME[p.status] || p.status);
+    if (p.status) bits.push(statusText(p));
     const boosts = boostText(p.boosts);
     if (boosts) bits.push(`boosts ${boosts}`);
     // Under Illusion, show exactly what the opponent's client would show: the disguise.
@@ -451,8 +481,14 @@ export function renderObservation(game, sideId, ctx) {
     bits.push(`item ${itemNow}`);
     bits.push(`ability ${p.illusion ? sheet?.ability || '?' : dex.abilities.get(p.ability).name}`);
     bits.push(`types ${p.illusion ? disp.species.types.join('/') : p.getTypes().join('/')}`);
-    const ranges = ['atk', 'def', 'spa', 'spd', 'spe'].map(s => `${STAT_SHORT[s]} ${statRange(disp.species, s).join('–')}`).join(' ');
+    const known = ctx.oppSpeedBounds?.[toID(disp.species.name)];
+    const ranges = ['atk', 'def', 'spa', 'spd', 'spe'].map(s => {
+      let [lo, hi] = statRange(disp.species, s);
+      if (s === 'spe' && known && !p.illusion) { lo = Math.max(lo, known.lo); hi = Math.min(hi, known.hi); }
+      return `${STAT_SHORT[s]} ${lo === hi ? lo : `${lo}–${hi}`}`;
+    }).join(' ');
     bits.push(`possible stats ${ranges}`);
+    if (p.lastMove) bits.push(`last used ${p.lastMove.name}`);
     L.push(`  [foe${i + 1}] ${speciesName(p)} — ${bits.join(' · ')}`);
     if (sheet) L.push(`      moves (sheet): ${sheet.moves.join(' · ')}`);
     const vol = volatileText(p, false);
@@ -466,7 +502,7 @@ export function renderObservation(game, sideId, ctx) {
   L.push(`THEIR BROUGHT 4: seen ${[...seen].join(', ') || 'none'}${oppFainted.length ? ` (fainted: ${oppFainted.join(', ')})` : ''}; ${unseenCount > 0 ? `${unseenCount} not yet seen, from: ${ctx.oppSheet.map(s => s.species).filter(sp => ![...seen].some(x => toID(x).startsWith(toID(sp)) || toID(sp).startsWith(toID(x)))).join(', ')}` : 'all four seen'}.`);
   if (oppBench.length) {
     const benchInfo = opp.pokemon.filter(p => !p.isActive && !p.fainted && [...seen].some(x => toID(speciesName(p)).startsWith(toID(x))));
-    if (benchInfo.length) L.push(`THEIR BENCH (seen): ${benchInfo.map(p => `${speciesName(p)} ${publicHpPercent(p)}%${p.status ? ` ${STATUS_NAME[p.status]}` : ''}`).join(' · ')}`);
+    if (benchInfo.length) L.push(`THEIR BENCH (seen): ${benchInfo.map(p => `${speciesName(p)} ${publicHpPercent(p)}%${p.status ? ` ${statusText(p)}` : ''}`).join(' · ')}`);
   }
   const myLeft = me.pokemon.filter(p => !p.fainted).length;
   const theirLeft = 4 - opp.pokemon.filter(p => p.fainted).length;
@@ -500,6 +536,26 @@ export function renderObservation(game, sideId, ctx) {
   }
 
   const foeSheet = foe => { const p = opp.active[foe === 'foe1' ? 0 : 1]; return p ? sheetBySpecies(p) : null; };
+  if (options.kind === 'switch' && theirs.length && !illusionRisk) {
+    const candidates = me.pokemon.filter(p => !p.isActive && !p.fainted);
+    if (candidates.length) {
+      L.push('', 'YOUR OPTIONS AGAINST THEIR ACTIVES (best hit each way; Speed vs theirs):');
+      for (const c of candidates) {
+        const spe = effectiveSpeed(c);
+        L.push(`  ${c.species.name} [${pct((c.hp / c.maxhp) * 100)}] Speed ${spe}:`);
+        for (const f of theirs) {
+          const [lo, hi] = effectiveSpeedRange(f, ctx.oppSpeedBounds?.[toID(f.species.name)]);
+          const tr = !!battle.field.pseudoWeather.trickroom;
+          const order = spe > hi ? (tr ? 'faster, so moves later under Trick Room' : 'faster') : spe < lo ? (tr ? 'slower, so moves first under Trick Room' : 'slower') : 'speed uncertain';
+          const out = bestHit(battle, c, f, c.moveSlots.map(m => m.id), 'defender', publicHpPercent(f));
+          const back = bestHit(battle, f, c, (sheetBySpecies(f)?.moves || []).map(toID), 'attacker', (c.hp / c.maxhp) * 100);
+          L.push(`    vs ${speciesName(f)} (${order}): deals ${out || 'nothing'} · takes ${back || 'nothing'}`);
+        }
+      }
+    }
+  }
+  const think = thinkText(options.kind === 'move' ? 'move' : options.slots.some(s => s.pivot) ? 'pivot' : 'replace');
+  if (think) L.push('', think);
   if (options.kind === 'switch' && menu.slots.some(s => s.options.some(o => o.action.pass))) L.push('', 'Fewer healthy Pokémon than empty slots: send what you have; a slot may stay empty.');
   L.push(...menuText(menu, foeSheet));
   return {text: L.join('\n'), options, menu, schema: turnSchema(menu, foeSheet)};

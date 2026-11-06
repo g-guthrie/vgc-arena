@@ -230,12 +230,12 @@ export const TOOLS = [
   },
   {
     name: 'turn_submit',
-    description: 'Submit this turn with option IDs from YOUR OPTIONS: {"actions": {"slot1": "1c", "slot2": "2a"}, "mega": null, "predictions": {"foe1": {"action": "<their move or switch>", "confidence": 0.6}, …}, "reason": "…"}. A wrong answer is refused with the options and nothing is consumed.',
+    description: 'Submit this turn with option IDs from YOUR OPTIONS: {"predictions": {"foe1": {"action": "<their move or switch>", "confidence": 0.6}, …}, "actions": {"slot1": "1c", "slot2": "2a"}, "mega": null, "reason": "…"}. A wrong answer is refused with the options and nothing is consumed.',
     input: {
       seat,
+      predictions: z.record(z.string(), z.object({action: z.string(), confidence: z.number()})).optional().describe('{"foe1": {"action": "…", "confidence": 0–1}, …}'),
       actions: z.record(z.string(), z.string()).describe('{"slot1": "<option id>", "slot2": "<option id>"}'),
       mega: z.number().nullable().optional().describe('Slot that Mega Evolves this turn'),
-      predictions: z.record(z.string(), z.object({action: z.string(), confidence: z.number()})).optional().describe('{"foe1": {"action": "…", "confidence": 0–1}, …}'),
       reason: z.string().nullable().optional().describe('Optional, one sentence'),
     },
     async run(arena, a) {

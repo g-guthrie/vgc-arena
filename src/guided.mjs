@@ -9,6 +9,7 @@
 import {dex, toID} from './showdown.mjs';
 import {pickableSpecies, legalMoves, shortDesc, SP_MAX_PER_STAT, SP_MAX_TOTAL} from './dex-tools.mjs';
 import {slotMissing} from './draft.mjs';
+import {thinkText} from './briefing.mjs';
 
 export const QUESTIONS = 9;
 const NATURES = () => dex.natures.all().map(n => n.name).sort();
@@ -82,6 +83,7 @@ export function questionText(q) {
     set: '{"ability": "…", "item": "…", "nature": "…", "sp": {"hp": 0, "atk": 0, "def": 0, "spa": 0, "spd": 0, "spe": 0}, "moves": ["…", "…", "…", "…"]}',
     lock: '{"team_plan": "…"}',
   }[q.step];
+  L.push(thinkText(q.step));
   L.push(`Answer with draft_answer ${example} plus your seat. To change an earlier answer: draft_revise({slot}) reopens that set, draft_revise({slot, species}) swaps the Pokémon.`);
   return L.join('\n');
 }
