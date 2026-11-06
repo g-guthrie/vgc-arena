@@ -206,6 +206,12 @@ export const TOOLS = [
     },
   },
   {
+    name: 'decision_schema',
+    description: 'JSON schema of the legal answers to your current decision (teambuilding question, team preview or turn), for programmatic clients.',
+    input: {seat},
+    async run(arena, a) { return JSON.stringify(arena.matchFor(a.seat).decisionSchema(a.seat)); },
+  },
+  {
     name: 'draft_question',
     description: 'The current teambuilding question as JSON, including a JSON schema of its legal answers (for programmatic clients).',
     input: {seat},

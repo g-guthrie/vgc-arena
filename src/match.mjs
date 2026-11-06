@@ -160,6 +160,49 @@ export class Match extends EventEmitter {
   }
 
   // Guided path: answer the board's current question.
+  // The exact legal answer shape for whatever this seat is being asked now,
+  // as a JSON schema: constrained clients can only produce legal answers.
+  decisionSchema(token) {
+    const side = this.sideOf(token);
+    if (!this.yourTurn(side)) return {kind: 'wait'};
+    const str = d => ({type: 'string', description: d});
+    if (this.phase === 'teambuilding') {
+      const q = question(this.seats[side].draft);
+      return {kind: 'teambuilding', tool: 'draft_answer', title: q.title, prompt: q.prompt, schema: q.schema};
+    }
+    if (this.phase === 'preview') {
+      const mine = this.seats[side].team.map(s => dex.species.get(s.species).name);
+      const props = {
+        bring: {type: 'array', items: {type: 'string', enum: mine}, minItems: 4, maxItems: 4, uniqueItems: true, description: 'Four of YOUR six; the first two lead'},
+        key_threats: str("The opponent's 2–3 most dangerous Pokémon or modes and how you handle each"),
+        game_plan: str('Lead plan, win condition, what to preserve'),
+      };
+      if (this.game.n > 1) props.lessons = str('What earlier games taught you and what you are changing');
+      return {kind: 'preview', tool: 'preview_submit', schema: {type: 'object', properties: props, required: Object.keys(props), additionalProperties: false}};
+    }
+    const game = this.currentGame;
+    const opts = legalOptions(game, side);
+    const view = this.game.view[side];
+    const depth = view.lastObs?.req === game.request(side) ? view.lastObs.depth : this.observe(side).depth;
+    const targetEnum = t => (t === 'adjacentAlly' ? ['ally'] : t === 'adjacentAllyOrSelf' ? ['self', 'ally'] : t === 'adjacentFoe' ? ['foe1', 'foe2'] : ['foe1', 'foe2', 'ally']);
+    const variants = [];
+    for (const s of opts.slots) {
+      if (opts.kind === 'switch' ? !s.mustSwitch : s.fainted) continue;
+      for (const m of s.moves || []) {
+        const v = {slot: {type: 'integer', enum: [s.slot]}, move: {type: 'string', enum: [m.name]}};
+        if (m.needsTarget) v.target = {type: 'string', enum: targetEnum(m.target)};
+        if (s.canMega) v.mega = {type: 'boolean'};
+        variants.push({type: 'object', properties: v, required: ['slot', 'move', ...(m.needsTarget && !['adjacentAlly', 'adjacentAllyOrSelf'].includes(m.target) ? ['target'] : [])], additionalProperties: false});
+      }
+      if (s.switches?.length) variants.push({type: 'object', properties: {slot: {type: 'integer', enum: [s.slot]}, switch: {type: 'string', enum: s.switches.map(x => x.species)}}, required: ['slot', 'switch'], additionalProperties: false});
+    }
+    const acting = opts.slots.filter(s => (opts.kind === 'switch' ? s.mustSwitch : !s.fainted)).length;
+    const props = {actions: {type: 'array', items: {anyOf: variants}, minItems: Math.min(1, acting), maxItems: acting, description: 'One action per slot that acts'}};
+    if (depth !== 'switch') props.predictions = {type: 'array', items: {type: 'object', properties: {foe: {type: 'string', enum: ['foe1', 'foe2']}, action: str('Move name or "switch"'), confidence: {type: 'number', minimum: 0, maximum: 1}}, required: ['foe', 'action', 'confidence'], additionalProperties: false}};
+    for (const f of REQUIRED_FIELDS[depth]) if (!props[f]) props[f] = str(f.replace('_', ' '));
+    return {kind: depth === 'switch' ? 'switch' : 'move', tool: 'turn_submit', depth, schema: {type: 'object', properties: props, required: REQUIRED_FIELDS[depth], additionalProperties: false}};
+  }
+
   draftQuestion(token) {
     const side = this.sideOf(token);
     return question(this.seats[side].draft);

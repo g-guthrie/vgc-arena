@@ -21,7 +21,7 @@ export const PROVIDERS = {
 // Teambuilding is guided: one question per decision, answered through a per-question
 // draft_answer whose schema holds exactly the legal answers.
 const HIDDEN = new Set(['arena_join', 'arena_wait', 'arena_state', 'arena_forfeit', 'arena_models', 'match_transcript', 'team_submit', 'validate_team',
-  'draft_concept', 'draft_set', 'draft_clear', 'draft_view', 'team_lock', 'draft_question', 'draft_answer']);
+  'draft_concept', 'draft_set', 'draft_clear', 'draft_view', 'team_lock', 'draft_question', 'draft_answer', 'decision_schema']);
 const SUBMITS = new Set(['draft_answer', 'preview_submit', 'turn_submit']);
 const LIMITS = {teambuilding: 8, preview: 6, move: 6, switch: 4};
 const SUBMIT_FOR = {teambuilding: 'draft_answer', preview: 'preview_submit', move: 'turn_submit', switch: 'turn_submit'};
@@ -145,8 +145,8 @@ export class ApiAgent {
   // This phase's tools: research everywhere, plus exactly one way to answer.
   currentTools() {
     const research = this.tools.filter(t => !SUBMITS.has(t.function.name));
-    if (this.kind === 'teambuilding') return [...research, this.answerTool].filter(Boolean);
-    return [...research, ...this.tools.filter(t => t.function.name === SUBMIT_FOR[this.kind])];
+    const answer = this.answerTool || this.tools.find(t => t.function.name === SUBMIT_FOR[this.kind]);
+    return [...research, answer].filter(Boolean);
   }
 
   // Long matches: keep the system prompt, the tail of the previous decision,
@@ -224,10 +224,10 @@ export class ApiAgent {
       if (/FINISHED/.test(head)) return st;
       if (!/YOUR TURN/.test(head)) { await this.call('arena_wait', {seat: this.seat}); continue; }
       const kind = /TEAMBUILDING/.test(st) ? 'teambuilding' : /TEAM PREVIEW/.test(st) ? 'preview' : /DECISION: choose a replacement/.test(st) ? 'switch' : 'move';
-      if (kind === 'teambuilding') {
-        const q = JSON.parse(await this.call('draft_question', {seat: this.seat}));
-        this.answerTool = {type: 'function', function: {name: 'draft_answer', description: `${q.title}. ${q.prompt}`, parameters: q.schema}};
-      }
+      // Every decision is answered through a tool whose schema holds only legal answers.
+      const sch = JSON.parse(await this.call('decision_schema', {seat: this.seat}));
+      const base = this.tools.find(t => t.function.name === sch.tool)?.function.description || '';
+      this.answerTool = sch.schema ? {type: 'function', function: {name: sch.tool, description: sch.title ? `${sch.title}. ${sch.prompt}` : base, parameters: sch.schema}} : null;
       const ok = await this.decide(st, kind);
       if (ok) { failures = 0; continue; }
       if (++failures >= 3) {
