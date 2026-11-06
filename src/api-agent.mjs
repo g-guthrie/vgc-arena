@@ -202,9 +202,10 @@ export class ApiAgent {
       const base = TOOLS.find(t => t.name === sch.tool)?.description || '';
       this.answerTool = {type: 'function', function: {name: sch.tool, description: sch.title ? `${sch.title}. ${sch.prompt}` : base, parameters: sch.schema}};
       if (await this.decide(st)) continue;
-      this.log(`no legal ${sch.tool} within ${MAX_CALLS} calls; forfeiting`);
-      await this.call('arena_forfeit', {seat: this.seat});
-      return 'forfeited';
+      // The game is lost, not the set: the next game is a fresh decision.
+      // (Before the first game there is only the match to concede.)
+      this.log(`no legal ${sch.tool} within ${MAX_CALLS} calls; forfeiting the game`);
+      await this.call('arena_forfeit', {seat: this.seat, scope: 'game'});
     }
     return 'stopped';
   }

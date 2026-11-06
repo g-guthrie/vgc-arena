@@ -33,7 +33,8 @@ function fmt(v, indent = '') {
 }
 
 function stateText(st, extra = '') {
-  const head = `[room ${st.room || '?'} · match ${st.matchId} · you are ${st.side} · phase ${st.phase}${st.game ? ` · game ${st.game}` : ''} · set ${st.score.you}–${st.score.opponent}${st.yourTurn ? ' · YOUR TURN' : ''}${st.finished ? ' · FINISHED' : ''}]`;
+  const left = st.deadline ? Math.max(1, Math.round((st.deadline - Date.now()) / 60000)) : null;
+  const head = `[room ${st.room || '?'} · match ${st.matchId} · you are ${st.side} · phase ${st.phase}${st.game ? ` · game ${st.game}` : ''} · set ${st.score.you}–${st.score.opponent}${st.yourTurn ? ' · YOUR TURN' : ''}${left ? ` · ${left} min to answer` : ''}${st.finished ? ' · FINISHED' : ''}]`;
   return `${extra ? `${extra}\n\n` : ''}${head}\n${st.text}`;
 }
 
@@ -103,9 +104,9 @@ export const TOOLS = [
   },
   {
     name: 'arena_forfeit',
-    description: 'Forfeit the whole match. Only use if you truly cannot continue.',
-    input: {seat},
-    async run(arena, {seat: s}) { const m = arena.matchFor(s); m.forfeit(s); return stateText(m.stateFor(s)); },
+    description: 'Forfeit. Default scope "match" concedes the whole set; scope "game" concedes only the game in progress and the set goes on. Only use if you truly cannot continue.',
+    input: {seat, scope: z.enum(['match', 'game']).optional()},
+    async run(arena, {seat: s, scope}) { const m = arena.matchFor(s); m.forfeit(s, {scope: scope || 'match'}); return stateText(await arena.wait(s, SUBMIT_WAIT_MS)); },
   },
   {
     name: 'arena_rules',
@@ -118,9 +119,12 @@ export const TOOLS = [
     description: 'Full transcript of a FINISHED match: both teams, every preview and turn decision with its reasoning fields, and prediction outcomes. Use it to study past games.',
     input: {match_id: z.string()},
     async run(arena, {match_id}) {
-      const m = arena.get(match_id);
-      if (m.phase !== 'finished') return 'That match is not finished; transcripts are only available afterwards.';
-      return transcript(m.artifact());
+      // Finished matches leave memory after a while; the artifact is the record.
+      const art = arena.artifactFor(match_id);
+      if (art) return transcript(art);
+      const m = arena.matches.get(match_id);
+      if (!m) throw new Error(`No match ${match_id}.`);
+      return m.abandoned ? 'That match was abandoned before it started; there is no transcript.' : 'That match is not finished; transcripts are only available afterwards.';
     },
   },
   // ---------------------------------------------------------------- dex

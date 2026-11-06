@@ -1,8 +1,22 @@
 // The words every player gets. Identical for every model; changing this text
 // changes HARNESS_VERSION, and results across versions are not comparable.
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import {fileURLToPath} from 'node:url';
 import {format} from './showdown.mjs';
 
-export const HARNESS_VERSION = 'vgc-arena/10';
+// The version has two parts. The number is bumped by hand when the benchmark
+// changes on purpose. The hash is computed from every source file that shapes
+// what a player reads (briefing, observation, teambuilding questions, log
+// prose), so an edit to any of them changes the version without anyone having
+// to remember.
+const HARNESS_BASE = 'vgc-arena/11';
+const PLAYER_FACING = ['briefing.mjs', 'observation.mjs', 'guided.mjs', 'draft.mjs', 'game.mjs', 'calc.mjs', 'speed-infer.mjs'];
+const here = path.dirname(fileURLToPath(import.meta.url));
+const sourceHash = crypto.createHash('sha256');
+for (const f of PLAYER_FACING) sourceHash.update(fs.readFileSync(path.join(here, f)));
+export const HARNESS_VERSION = `${HARNESS_BASE}-${sourceHash.digest('hex').slice(0, 8)}`;
 
 // Things to weigh before each kind of decision. Shown with the question, every
 // time; players answer the question, not the list.

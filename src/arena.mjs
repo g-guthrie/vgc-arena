@@ -15,18 +15,59 @@ export const MAX_WAIT_MS = Number(process.env.VGC_MAX_WAIT_MS || 40000);
 // Mirror matches (same model both seats) only if nobody else shows up in this long.
 const MIRROR_AFTER_MS = Number(process.env.VGC_MIRROR_AFTER_SEC || 90) * 1000;
 const DEFAULT_BOT_FALLBACK_SEC = Number(process.env.VGC_BOT_FALLBACK_SEC ?? 180);
+// A finished match stays in memory this long (so its players can read the
+// result and spectators the final screen), then it is served from its artifact.
+const RETAIN_MS = Number(process.env.VGC_RETAIN_FINISHED_SEC ?? 900) * 1000;
+// A room nobody ever joined is abandoned after this long.
+const WAITING_TTL_MS = Number(process.env.VGC_WAITING_TTL_SEC ?? 3600) * 1000;
 
 // Optional owner keys for public deployments: VGC_KEYS="key1=alice,key2=bob".
 const KEYS = new Map((process.env.VGC_KEYS || '').split(',').filter(Boolean).map(kv => kv.split('=').map(x => x.trim())));
 
 export class Arena {
-  constructor({artifactsDir, db} = {}) {
+  constructor({artifactsDir, db, retainMs = RETAIN_MS, waitingTtlMs = WAITING_TTL_MS, tickMs = 1000} = {}) {
     this.matches = new Map();
     this.rooms = new Map();
     this.byToken = new Map();
+    this.retainMs = retainMs;
+    this.waitingTtlMs = waitingTtlMs;
     this.artifactsDir = artifactsDir || process.env.VGC_ARTIFACTS || path.join(ROOT_DIR, 'artifacts');
     fs.mkdirSync(this.artifactsDir, {recursive: true});
     this.db = db || new StatsDB(path.join(this.artifactsDir, 'arena.db'));
+    // Decision clocks and housekeeping. unref'd so a test process can exit.
+    if (tickMs > 0) this.timer = setInterval(() => this.tick(), tickMs).unref?.() || null;
+  }
+
+  // Run the clocks on every live match; expire rooms nobody joined.
+  tick(now = Date.now()) {
+    for (const m of this.matches.values()) {
+      try {
+        if (m.phase === 'waiting') {
+          if (this.waitingTtlMs > 0 && now - Date.parse(m.createdAt) > this.waitingTtlMs && !m.botFallbackAt) m.abandon('nobody joined the room');
+        } else m.tick(now);
+      } catch (err) { m.log(`clock error: ${err.message}`); }
+    }
+  }
+
+  close() { if (this.timer) clearInterval(this.timer); }
+
+  // Forget a match. Its artifact and database row are the record from here on.
+  release(match) {
+    if (this.matches.get(match.id) !== match) return;
+    this.matches.delete(match.id);
+    if (this.rooms.get(match.room) === match) this.rooms.delete(match.room);
+    for (const s of ['p1', 'p2']) if (match.seats[s]) this.byToken.delete(match.seats[s].token);
+    match.removeAllListeners();
+  }
+
+  // The full record of a finished match that may no longer be in memory.
+  artifactFor(id) {
+    const live = this.matches.get(id);
+    if (live) return live.phase === 'finished' && !live.abandoned ? live.artifact() : null;
+    const row = this.db.get('select artifact_dir from matches where id = ?', id);
+    if (!row?.artifact_dir) return null;
+    const file = path.join(row.artifact_dir, 'match.json');
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
   }
 
   newRoomCode() {
@@ -42,12 +83,15 @@ export class Arena {
     if (opts.reserved) match.reserved = true;
     this.matches.set(match.id, match);
     this.rooms.set(match.room, match);
+    const retire = () => { if (this.retainMs > 0) setTimeout(() => this.release(match), this.retainMs).unref?.(); else this.release(match); };
     match.on('finished', () => {
       try {
         match.artifactPaths = writeArtifacts(match, this.artifactsDir);
         this.db.recordMatch(match, match.artifactPaths.dir);
       } catch (err) { match.log(`recording failed: ${err.message}`); }
+      retire();
     });
+    match.on('abandoned', retire);
     if (opts.bot) this.addBot(match.id, opts.bot);
     return match;
   }

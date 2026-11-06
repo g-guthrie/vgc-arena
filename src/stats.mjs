@@ -24,6 +24,14 @@ export function fitBT(pairs, players, iters = 250) {
 }
 export const expected = (ra, rb) => 1 / (1 + 10 ** ((rb - ra) / 400));
 
+// A leaderboard row's identity: the model alone, or the model plus the
+// reasoning effort or the connection path (mcp / api / cli / http / builtin).
+export function rowKey(group, model, effort, path) {
+  if (group === 'effort') return `${model}|${effort || 'default'}`;
+  if (group === 'path') return `${model}|${path || 'http'}`;
+  return model;
+}
+
 const median = xs => { const s = xs.filter(x => x != null).sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
 
 export class Stats {
@@ -55,15 +63,15 @@ export class Stats {
   gameRows({by = 'pilot', group = 'model', includeUnlisted = false} = {}) {
     const col = by === 'builder' ? 'builder_model_id' : 'model_id';
     const rows = this.db.all(`
-      select g.match_id, g.n, g.winner, a.${col} a_model, a.effort a_effort, a.listed a_listed, b.${col} b_model, b.effort b_effort, b.listed b_listed
+      select g.match_id, g.n, g.winner, a.${col} a_model, a.effort a_effort, a.path a_path, a.listed a_listed, b.${col} b_model, b.effort b_effort, b.path b_path, b.listed b_listed
       from games g join matches m on m.id = g.match_id and m.rated = 1
       join seats a on a.match_id = g.match_id and a.side = 'p1'
       join seats b on b.match_id = g.match_id and b.side = 'p2'
       where g.winner in ('p1', 'p2', 'tie')`);
-    const key = (model, effort) => (group === 'effort' ? `${model}|${effort || 'default'}` : model);
+    const key = (model, effort, p) => rowKey(group, model, effort, p);
     return rows
       .filter(r => includeUnlisted || ((r.a_listed || String(r.a_model).startsWith('builtin:')) && (r.b_listed || String(r.b_model).startsWith('builtin:'))))
-      .map(r => ({match: r.match_id, a: key(r.a_model, r.a_effort), b: key(r.b_model, r.b_effort), s: r.winner === 'p1' ? 1 : r.winner === 'p2' ? 0 : 0.5}))
+      .map(r => ({match: r.match_id, a: key(r.a_model, r.a_effort, r.a_path), b: key(r.b_model, r.b_effort, r.b_path), s: r.winner === 'p1' ? 1 : r.winner === 'p2' ? 0 : 0.5}))
       .filter(r => r.a !== r.b);
   }
 
@@ -94,17 +102,20 @@ export class Stats {
         if (g.s === 1) { rec[g.a].w++; rec[g.b].l++; } else if (g.s === 0) { rec[g.b].w++; rec[g.a].l++; } else { rec[g.a].t++; rec[g.b].t++; }
       }
       const col = by === 'builder' ? 'builder_model_id' : 'model_id';
-      const seatStats = this.db.all(`select s.${col} model, s.effort, sum(s.predictions) preds, sum(s.predictions_correct) correct, sum(s.brier_sum) brier,
+      const splitCol = {effort: 's.effort', path: 's.path'}[group];
+      const seatStats = this.db.all(`select s.${col} model, s.effort, s.path, sum(s.predictions) preds, sum(s.predictions_correct) correct, sum(s.brier_sum) brier,
         group_concat(s.median_think_ms) thinks, sum(s.rejections) rejections, count(*) seats, group_concat(distinct s.owner) owners
-        from seats s join matches m on m.id = s.match_id and m.rated = 1 group by s.${col}${group === 'effort' ? ', s.effort' : ''}`);
-      const statFor = key => seatStats.find(x => (group === 'effort' ? `${x.model}|${x.effort || 'default'}` : x.model) === key) || {};
+        from seats s join matches m on m.id = s.match_id and m.rated = 1 group by s.${col}${splitCol ? `, ${splitCol}` : ''}`);
+      const statFor = key => seatStats.find(x => rowKey(group, x.model, x.effort, x.path) === key) || {};
       const rows = players.map(p => {
         const bs = samples[p].sort((x, y) => x - y);
         const st = statFor(p);
-        const [model, effort = null] = p.split('|');
+        const [model, split = null] = p.split('|');
         const info = modelInfo(model);
         return {
-          key: p, model, effort, name: info?.name || model.replace(/^unlisted:/, ''), provider: info?.provider || 'unknown', listed: !!info,
+          // split: the second half of the row key (reasoning effort or connection path), shown as a chip.
+          key: p, model, split, effort: group === 'effort' ? split : null, path: group === 'path' ? split : null,
+          name: info?.name || model.replace(/^unlisted:/, ''), provider: info?.provider || 'unknown', listed: !!info,
           rating: point[p], lo: bs.length ? bs[Math.floor(bs.length * 0.05)] : null, hi: bs.length ? bs[Math.floor(bs.length * 0.95)] : null,
           games: rec[p].w + rec[p].l + rec[p].t, w: rec[p].w, l: rec[p].l, t: rec[p].t, matches: rec[p].matches.size,
           predictionAccuracy: st.preds ? st.correct / st.preds : null, brier: st.preds ? st.brier / st.preds : null, predictions: st.preds || 0,
@@ -132,7 +143,7 @@ export class Stats {
       };
       const rating = Object.fromEntries(lb.rows.map(r => [r.key, r.rating]));
       return {
-        models: lb.rows.map(r => ({key: r.key, name: r.name, provider: r.provider, effort: r.effort})),
+        models: lb.rows.map(r => ({key: r.key, name: r.name, provider: r.provider, effort: r.effort, split: r.split})),
         cells: keys.map(a => keys.map(b => (a === b ? null : {expected: expected(rating[a], rating[b]), ...cell(a, b)}))),
       };
     });
