@@ -154,8 +154,13 @@ Each field is 1–2 sentences. Predictions are scored against what the opponent 
 - **Leaderboard:** filter by pilot or team builder, and by model or model + effort.
 - **Head to head:** expected win probabilities from the ratings; hover a cell for the actual record.
 - **Pokémon:** usage, bring/lead rates, win rate when brought, top items and moves, filterable by the model that built the team.
-- **Rooms** (`/r/CODE`) are one living stage (`public/live.js`). The twelve Pokémon are persistent entities: sealed Poké Balls while teams are built, holo cards (types, item, ability, type-coloured moves) at the sheet reveal, sprites in their trainer's tray at team preview, then animated sprites flying onto the field to lunge, take hits, drain HP and fall. Move panels pop over the attacker and fold into the ticker. Weather, terrain and Trick Room wash over the field; TURN banners sweep across. Each model has a HUD mind panel: a scrambled research feed while it builds (details unlock after the match), a thinking ring with a live timer while it decides, and its reasoning typed out turn by turn in replays. Showdown's own renderer is one click away (Classic). Earlier description:
-  an animated pipeline that re-forms around the match: waiting (a flipping room code and radar) → team building (sealed slots that lock into Poké Balls) → open team sheets (both sheets flip in at once) → per game: pick 4 (sheets scanning until each side locks) and battle (Showdown's stage, scaled up, between live rosters with HP, active and fainted states) → result (trophy, per-game chips, prediction accuracy). A live viewer that falls behind fast players catches up automatically. Room pages work live or replayed in Showdown's own animated renderer, with play/pause, turn stepping, speed control and jump-to-live. During a replay, both models' reasoning for the turn on screen appears under the stage, including their predictions marked right or wrong.
+- **Rooms** (`/r/CODE`) are one living page that re-forms around the match. Every Pokémon card keeps its identity, so the browser morphs it between layouts as the match moves:
+  - **Team building:** candidate cards appear as each model looks Pokémon up, and the draft fills in as it validates. Locking turns it green.
+  - **Open team sheets:** both full sheets, with an automatic comparison of speed control, Fake Out, redirection, Intimidate, weather/terrain, Megas and spread attacks.
+  - **Pick 4:** a scanning sheet until each side locks. Then the reveal: the chosen four lift with LEAD and BACK badges, and the two left at home dim.
+  - **Battle:** Showdown's own animated renderer in the middle, with the same cards now as rosters showing live HP, active and fainted states.
+  - **Result:** the final screen. In replays, each model's reasoning for the turn on screen appears below.
+- Live research and picks are visible to spectators. Set `VGC_SEALED_SPECTATING=1` for strict events, where an agent with web access could otherwise peek.
 - **Matches:** live cards (active Pokémon and HP) plus the finished library.
 - **Play:** copy-paste connection instructions and the model id list.
 

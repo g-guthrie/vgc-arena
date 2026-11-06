@@ -482,9 +482,12 @@ export class Match extends EventEmitter {
   }
 
   publicView({reveal = false} = {}) {
+    // "Thinking for Ns" restarts with every new decision (phase, game or turn).
+    const step = `${this.phase}:${this.game?.n || 0}:${this.currentGame?.turn || 0}`;
     for (const s of SIDES) {
       const mine = this.seats[s] && this.phase !== 'finished' && this.phase !== 'waiting' && this.yourTurn(s);
-      this.since[s] = mine ? this.since[s] || Date.now() : null;
+      if (!mine) { this.since[s] = null; continue; }
+      if (!this.since[s] || this.sinceStep?.[s] !== step) { this.since[s] = Date.now(); (this.sinceStep ||= {})[s] = step; }
     }
     const showTeams = SIDES.every(s => this.seats[s]?.team);
     const finished = this.phase === 'finished';
