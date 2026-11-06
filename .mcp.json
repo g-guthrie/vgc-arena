@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "vgc-arena": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["src/mcp-stdio.mjs"],
+      "env": {"VGC_ARENA_URL": "http://127.0.0.1:3170"}
+    }
+  }
+}

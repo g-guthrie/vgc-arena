@@ -1,0 +1,26 @@
+{
+  "name": "vgc-arena",
+  "version": "0.1.0",
+  "description": "AI-native Pokemon Champions VGC arena: teambuilding, open team sheets, Bo3, any agent via MCP or CLI.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "vgc": "src/cli.mjs",
+    "vgc-mcp": "src/mcp-stdio.mjs"
+  },
+  "scripts": {
+    "setup": "bash scripts/setup-showdown.sh",
+    "start": "node src/server.mjs",
+    "mcp": "node src/mcp-stdio.mjs",
+    "test": "node --test test/*.test.mjs",
+    "e2e": "node test/bots-inprocess.mjs && node test/stress-bots.mjs 20",
+    "ratings": "node src/ratings.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  }
+}
