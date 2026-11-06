@@ -6,7 +6,6 @@ import {dex, toID} from './showdown.mjs';
 import {statRange} from './dex-tools.mjs';
 import {damageRange, effectiveSpeed, effectiveSpeedRange, megaPreview} from './calc.mjs';
 import {describeLines} from './game.mjs';
-import {thinkText} from './briefing.mjs';
 
 const STAT_SHORT = {atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe', accuracy: 'Acc', evasion: 'Eva'};
 const STATUS_NAME = {brn: 'burned', par: 'paralyzed', slp: 'asleep', frz: 'frozen', psn: 'poisoned', tox: 'badly poisoned'};
@@ -597,7 +596,7 @@ export function renderObservation(game, sideId, ctx) {
       }
     }
   }
-  const think = thinkText(options.kind === 'move' ? 'move' : options.slots.some(s => s.pivot) ? 'pivot' : 'replace');
+  const think = ctx.think?.(options.kind === 'move' ? 'move' : options.slots.some(s => s.pivot) ? 'pivot' : 'replace');
   if (think) L.push('', think);
   L.push(...menuText(menu, foeSheet));
   return {text: L.join('\n'), options, menu, schema: turnSchema(menu, foeSheet)};

@@ -189,6 +189,15 @@ export class Match extends EventEmitter {
     return view.lastObs;
   }
 
+  // A checklist in full the first time this seat meets that kind of decision,
+  // then as a one-line reminder.
+  think(side, kind) {
+    const seen = this.seats[side].thinkShown ||= new Set();
+    const full = !seen.has(kind);
+    seen.add(kind);
+    return thinkText(kind, full);
+  }
+
   sheetFor(side, species) {
     const base = dex.species.get(species);
     return this.seats[side].sheet.find(s => [base.name, base.baseSpecies].some(n => toID(n) === toID(s.species)));
@@ -251,7 +260,7 @@ export class Match extends EventEmitter {
   guidedText(token) {
     const side = this.sideOf(token);
     const draft = this.seats[side].draft;
-    return `${boardText(draft)}\n\n${questionText(question(draft))}`;
+    return `${boardText(draft)}\n\n${questionText(question(draft), kind => this.think(side, kind))}`;
   }
 
   teamLock(token, {team_plan}) {
@@ -550,6 +559,7 @@ export class Match extends EventEmitter {
       oppSheet: this.seats[other(side)].sheet,
       oppSeen: view.oppSeen,
       oppSpeedBounds: this.speedBounds[other(side)],
+      think: kind => this.think(side, kind),
       alerts,
     });
     return obs;
@@ -583,7 +593,7 @@ export class Match extends EventEmitter {
       L.push('', `OPPONENT'S OPEN TEAM SHEET:`, openSheetText(opp.sheet));
       L.push('', 'Opponent stat ranges at level 50 (any legal spread):');
       for (const s of opp.sheet) L.push(`  ${s.species}: ${rangesLine(s.species)}`);
-      L.push('', thinkText('preview'));
+      L.push('', this.think(side, 'preview'));
       L.push('', `ANSWER with preview_submit: {"bring": [4 of ${seat.team.map(s => `"${s.species}"`).join(', ')}], "game_plan": "…"}
   bring: the first two lead · game_plan: 2–3 sentences on leads, win condition and answers to their biggest threats${g.n > 1 ? ', and what you are changing from earlier games' : ''}`);
       return {...base, yourTurn: true, kind: 'preview', text: L.join('\n')};

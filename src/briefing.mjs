@@ -2,34 +2,7 @@
 // changes HARNESS_VERSION, and results across versions are not comparable.
 import {format} from './showdown.mjs';
 
-export const HARNESS_VERSION = 'vgc-arena/9';
-
-// The game: what every player gets, MCP or API.
-export const GAME_BRIEFING = `You are a player in VGC Arena: a best-of-3 Pokémon Champions VGC match (${format.name}) against another AI.
-You act only through the arena tools. Your opponent sees nothing you write except your actions in battle.
-
-THE MATCH
-1. Teambuilding: nine questions on a draft board the arena keeps (concept → your six Pokémon → one full set per Pokémon → team plan). Answer each with draft_answer; research with the dex tools whenever you like. Your team is fixed for all games.
-2. Team preview (every game): you see both open team sheets (species, items, abilities, moves — not spreads or natures). Pick 4; the first two you list lead. preview_submit with bring and game_plan.
-3. Battle: each turn you get one observation ending in YOUR OPTIONS, a menu with an ID for every legal action. Answer with turn_submit: one ID per slot, optional Mega, and a prediction for each foe. The opponent chooses at the same time.
-4. After each game you go straight to the next game's preview. First to 2 game wins takes the match.
-
-HOW TO THINK
-The harness does the arithmetic and shows everything a player at the table could see: legal actions, exact own stats, opponent stat ranges (Speed narrowed by move order seen), who outspeeds whom, the strongest hits each way with KO flags, Mega numbers, field timers, Protect odds, status counters, last moves. Trust labeled facts; treat ranges and "UNCERTAIN" as real uncertainty. Every decision ends with a short list of things to weigh. Weigh them; you don't need to write about them. Predictions are scored against what the opponent actually chose; reason is optional.`;
-
-// How to drive the loop yourself, for agents connected over MCP or the CLI.
-export const BRIEFING = `${GAME_BRIEFING}
-
-IF YOU WERE JUST TOLD TO "GO PLAY"
-Play this one match to the end, then report the result to your user. Only join another match if your user asked for more than one.
-
-HOW TO WAIT
-Submitting returns your next observation when it is ready. If it says you are waiting, call arena_wait (it holds up to ~40 s) and repeat until it is your turn or the match is over. Never stop until arena_state says the match is FINISHED.`;
-
-export const TEAMBUILD_TEXT = `TEAMBUILDING — nine questions. The arena keeps your draft board and asks, in order: (1) your concept; (2) all six Pokémon; (3–8) one complete set per Pokémon — ability, item, nature, stat points and moves, choosing only from the legal options listed; (9) your team plan, which locks the team. Answer each with draft_answer; the reply shows the updated board, a team report and the next question. draft_revise changes an earlier answer.
-Rules: level 50 · Stat Points 0–32 per stat, 66 total · natures as usual · no IVs · species clause · item clause · Mega Stones allowed (one Mega Evolution per battle) · no Terastallization · Champions learnsets differ from mainline games (only legal moves are offered).
-Research whenever you want (compact by default): pokemon, search_pokemon, search_moves, move, item, search_items, ability, calc.`;
-
+export const HARNESS_VERSION = 'vgc-arena/10';
 
 // Things to weigh before each kind of decision. Shown with the question, every
 // time; players answer the question, not the list.
@@ -90,7 +63,45 @@ export const THINK = {
   ],
 };
 
-export function thinkText(kind) {
+const THINK_NAMES = {concept: 'concept', species: 'six Pokémon', set: 'each set', lock: 'team plan', preview: 'team preview', move: 'move turn', replace: 'replacing a fainted Pokémon', pivot: 'mid-turn switch'};
+
+// The full list the first time a player meets a kind of decision; after that,
+// one line pointing back to it (it is also in the briefing).
+export function thinkText(kind, full = true) {
   const list = THINK[kind];
-  return list ? `WEIGH BEFORE ANSWERING (no need to write about these):\n${list.map(x => `  - ${x}`).join('\n')}` : '';
+  if (!list) return '';
+  if (!full) return `WEIGH the ${THINK_NAMES[kind]} checklist (in your briefing) before answering.`;
+  return `WEIGH BEFORE ANSWERING (no need to write about these; this list appears once, then as a one-line reminder):\n${list.map(x => `  - ${x}`).join('\n')}`;
 }
+
+const CHECKLISTS = Object.entries(THINK).map(([k, list]) => `${THINK_NAMES[k][0].toUpperCase()}${THINK_NAMES[k].slice(1)}:\n${list.map(x => `  - ${x}`).join('\n')}`).join('\n');
+
+// The game: what every player gets, MCP or API.
+export const GAME_BRIEFING = `You are a player in VGC Arena: a best-of-3 Pokémon Champions VGC match (${format.name}) against another AI.
+You act only through the arena tools. Your opponent sees nothing you write except your actions in battle.
+
+THE MATCH
+1. Teambuilding: nine questions on a draft board the arena keeps (concept → your six Pokémon → one full set per Pokémon → team plan). Answer each with draft_answer; research with the dex tools whenever you like. Your team is fixed for all games.
+2. Team preview (every game): you see both open team sheets (species, items, abilities, moves — not spreads or natures). Pick 4; the first two you list lead. preview_submit with bring and game_plan.
+3. Battle: each turn you get one observation ending in YOUR OPTIONS, a menu with an ID for every legal action. Answer with turn_submit: one ID per slot, optional Mega, and a prediction for each foe. The opponent chooses at the same time.
+4. After each game you go straight to the next game's preview. First to 2 game wins takes the match.
+
+HOW TO THINK
+The harness does the arithmetic and shows everything a player at the table could see: legal actions, exact own stats, opponent stat ranges (Speed narrowed by move order seen), who outspeeds whom, the strongest hits each way with KO flags, Mega numbers, field timers, Protect odds, status counters, last moves. Trust labeled facts; treat ranges and "UNCERTAIN" as real uncertainty. Predictions are scored against what the opponent actually chose; reason is optional.
+
+CHECKLISTS
+Before each decision, weigh the checklist for that kind of decision. You don't need to write about it. Each one is shown in full the first time, then as a one-line reminder.
+${CHECKLISTS}`;
+
+// How to drive the loop yourself, for agents connected over MCP or the CLI.
+export const BRIEFING = `${GAME_BRIEFING}
+
+IF YOU WERE JUST TOLD TO "GO PLAY"
+Play this one match to the end, then report the result to your user. Only join another match if your user asked for more than one.
+
+HOW TO WAIT
+Submitting returns your next observation when it is ready. If it says you are waiting, call arena_wait (it holds up to ~40 s) and repeat until it is your turn or the match is over. Never stop until arena_state says the match is FINISHED.`;
+
+export const TEAMBUILD_TEXT = `TEAMBUILDING — nine questions. The arena keeps your draft board and asks, in order: (1) your concept; (2) all six Pokémon; (3–8) one complete set per Pokémon — ability, item, nature, stat points and moves, choosing only from the legal options listed; (9) your team plan, which locks the team. Answer each with draft_answer; the reply shows the updated board, a team report and the next question. draft_revise changes an earlier answer.
+Rules: level 50 · Stat Points 0–32 per stat, 66 total · natures as usual · no IVs · species clause · item clause · Mega Stones allowed (one Mega Evolution per battle) · no Terastallization · Champions learnsets differ from mainline games (only legal moves are offered).
+Research whenever you want (compact by default): pokemon, search_pokemon, search_moves, move, item, search_items, ability, calc.`;
