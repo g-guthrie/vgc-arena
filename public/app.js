@@ -152,68 +152,292 @@ async function viewPokemon(model) {
 }
 
 // ---------------------------------------------------------------- matches
-const side = p => p ? `${modelLink(p.model, p.name || p.model, p.provider, p.effort)}${p.owner ? ` <span class="muted small">by ${esc(p.owner)}</span>` : ''}` : '<span class="muted">waiting…</span>';
+const side = p => p ? `${modelLink(p.model, p.name || p.model, p.provider, p.effort)}${p.owner ? ` <span class="muted small">by ${esc(p.owner)}</span>` : ''}` : '<span class="muted">waiting for a challenger…</span>';
+const roomHref = m => (m.room ? `#/room/${m.room}` : `#/match/${m.id}`);
+
+function liveCard(m) {
+  const mons = (m.actives || []).map(sideMons => (sideMons || []).filter(Boolean).map(p => `<span class="mon" title="${esc(p.species)} ${p.hp}%">${sprite(p.species)}<i style="width:${p.hp}%"></i></span>`).join('')).map(x => x || '<span class="muted small">—</span>');
+  return `<a class="livecard" href="${roomHref(m)}">
+    <div class="lc-top"><span class="roomcode">${esc(m.room || '')}</span><span class="live">● ${m.phase === 'waiting' ? 'waiting' : m.phase === 'battle' ? `game ${m.game} · turn ${m.turn}` : m.phase}</span></div>
+    <div class="lc-row"><span>${m.players[0] ? `<span class="dot" style="background:${pcolor(m.players[0].provider)}"></span>${esc(m.players[0].name || m.players[0].model)}` : '<span class="muted">open seat</span>'}</span><b>${m.score.p1}</b></div>
+    <div class="lc-mons">${mons[0] || ''}</div>
+    <div class="lc-row"><span>${m.players[1] ? `<span class="dot" style="background:${pcolor(m.players[1].provider)}"></span>${esc(m.players[1].name || m.players[1].model)}` : '<span class="muted">open seat</span>'}</span><b>${m.score.p2}</b></div>
+    <div class="lc-mons">${mons[1] || ''}</div>
+  </a>`;
+}
+
 async function viewMatches() {
   const d = await api('/api/matches?limit=200');
   $view.innerHTML = `<h1>Matches</h1>
-    <h2>Live <span class="live small">${d.live.length ? '●' : ''}</span></h2>
-    <div class="card table-wrap"><table><thead><tr><th>Match</th><th>Player 1</th><th>Player 2</th><th>Status</th></tr></thead><tbody>
-    ${d.live.map(m => `<tr><td><a href="#/match/${m.id}">${esc(m.id)}</a></td><td>${side(m.players[0])}</td><td>${side(m.players[1])}</td><td>${esc(m.phase)}${m.game ? ` · game ${m.game}, turn ${m.turn}` : ''} · ${m.score.p1}–${m.score.p2}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Nobody is playing right now.</td></tr>'}
-    </tbody></table></div>
+    ${roomBox()}
+    <h2>Live now</h2>
+    <div class="livegrid">${d.live.map(liveCard).join('') || '<div class="empty card">Nobody is playing right now. <a href="#/play">Send an agent →</a></div>'}</div>
     <h2>Finished</h2>
-    <div class="card table-wrap"><table><thead><tr><th>When</th><th>Player 1</th><th>Player 2</th><th class="num">Score</th><th class="num">Turns</th><th></th></tr></thead><tbody>
-    ${d.finished.map(m => `<tr><td class="small muted">${esc((m.finishedAt || '').replace('T', ' ').slice(0, 16))}</td><td>${m.winner === 'p1' ? '🏆 ' : ''}${side(m.p1)}</td><td>${m.winner === 'p2' ? '🏆 ' : ''}${side(m.p2)}</td><td class="num">${m.score.p1}–${m.score.p2}</td><td class="num">${m.turns}</td><td><a href="#/match/${m.id}">open</a></td></tr>`).join('') || '<tr><td colspan="6" class="empty">No finished matches yet.</td></tr>'}
+    <div class="card table-wrap"><table><thead><tr><th>Room</th><th>When</th><th>Player 1</th><th>Player 2</th><th class="num">Score</th><th class="num">Turns</th></tr></thead><tbody>
+    ${d.finished.map(m => `<tr class="rowlink" data-href="${roomHref(m)}"><td><a href="${roomHref(m)}"><code>${esc(m.room || '—')}</code></a></td><td class="small muted">${esc((m.finishedAt || '').replace('T', ' ').slice(0, 16))}</td><td>${m.winner === 'p1' ? '🏆 ' : ''}${side(m.p1)}</td><td>${m.winner === 'p2' ? '🏆 ' : ''}${side(m.p2)}</td><td class="num">${m.score.p1}–${m.score.p2}</td><td class="num">${m.turns}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No finished matches yet.</td></tr>'}
     </tbody></table></div>`;
-  timer = setTimeout(() => route(), 5000);
+  bindRoomBox();
+  $view.querySelectorAll('.rowlink').forEach(r => r.onclick = e => { if (e.target.tagName !== 'A') location.hash = r.dataset.href; });
+  timer = setTimeout(() => route(), 4000);
 }
 
-let gameTab = null;
-async function viewMatch(id) {
-  const m = await api(`/api/matches/${id}`);
-  if (m.error) { $view.innerHTML = `<div class="empty">${esc(m.error)}</div>`; return; }
-  const pl = s => m.players.find(p => p && p.side === s);
-  const name = s => { const p = pl(s); return p ? `${modelLink(p.model, p.modelName || p.model, p.provider, p.effort)}${p.owner ? ` <span class="muted small">by ${esc(p.owner)}</span>` : ''}${(p.flags || []).filter(f => f !== 'no-client-info').map(f => ` <span class="chip flag" title="identity flag">${esc(f)}</span>`).join('')}` : '<span class="muted">waiting…</span>'; };
-  const finished = m.phase === 'finished';
-  gameTab = gameTab && gameTab <= m.games.length ? gameTab : m.games.length || null;
-  const g = gameTab ? m.games[gameTab - 1] : null;
-  let html = `<p class="small"><a href="#/matches">← Matches</a></p>
-    <h1>${name('p1')} <span class="muted">vs</span> ${name('p2')}</h1>
-    <p class="sub">${esc(m.id)} · ${esc(m.phase)} · best of ${m.bestOf} · <b>${m.score.p1}–${m.score.p2}</b>${finished ? ` · ${m.winner === 'tie' ? 'tie' : `winner: ${m.winner === 'p1' ? 'Player 1' : 'Player 2'}`} (${esc(m.endReason)})` : ''}${finished ? '' : ' · hidden information (spreads, reasoning) is revealed when the match ends'}</p>`;
-  if (m.sheets) {
-    html += `<div class="two">${['p1', 'p2'].map(s => `<div class="card sheet"><b>${s === 'p1' ? 'Player 1' : 'Player 2'} team</b>${(m.sheets[s] || []).map(p => `<div>${sprite(p.species)} <b>${esc(p.species)}</b> @ ${esc(p.item)} · ${esc(p.ability)}<br><span class="small muted">${p.moves.map(esc).join(' · ')}</span></div>`).join('')}
-      ${finished && m.teamPlans?.[s] ? `<p class="small"><span class="muted">Team plan:</span> ${esc(m.teamPlans[s])}</p>` : ''}</div>`).join('')}</div>`;
-  } else if (m.players.some(Boolean)) {
-    html += `<div class="card">${m.players.filter(Boolean).map(p => `<div>${p.side}: ${p.teamSubmitted ? 'team submitted' : 'building a team…'}</div>`).join('')}</div>`;
+function roomBox(big) {
+  return `<form class="roombox ${big ? 'big' : ''}" id="roomform"><input id="roomcode" maxlength="6" placeholder="Room code" autocomplete="off" spellcheck="false" aria-label="Room code"><button>Watch</button></form>`;
+}
+function bindRoomBox() {
+  const f = $view.querySelector('#roomform');
+  if (!f) return;
+  f.onsubmit = e => { e.preventDefault(); const c = f.querySelector('input').value.trim().toUpperCase().replace(/^#/, ''); if (c) location.hash = `#/room/${c}`; };
+}
+
+// ---------------------------------------------------------------- the Showdown renderer
+// Showdown's own battle animation engine, loaded once from its CDN.
+let psReady = null;
+function loadPS() {
+  if (psReady) return psReady;
+  const base = 'https://play.pokemonshowdown.com';
+  for (const css of ['/style/battle.css?a7', '/style/font-awesome.css?']) {
+    const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = base + css; document.head.appendChild(l);
   }
-  if (m.games.length) {
-    html += `<div class="tabs">${m.games.map(x => `<button data-g="${x.n}" class="${x.n === gameTab ? 'on' : ''}">Game ${x.n}${x.winner ? ` · ${x.winner === 'p1' ? 'P1' : x.winner === 'p2' ? 'P2' : 'tie'}` : ''}</button>`).join('')}</div>`;
-    html += `<div class="small muted" style="margin-bottom:6px">Turn ${g.turn} · <a href="/replay/${m.id}/${g.n}" target="_blank">animated replay ↗</a></div><pre>${esc(g.log.join('\n'))}</pre>`;
-    if (m.decisions) {
-      const ds = m.decisions.filter(x => x.game === g.n);
-      const prev = (m.previews || []).find(p => p.n === g.n);
-      html += `<h2>Reasoning</h2><div class="card">`;
-      for (const s of ['p1', 'p2']) if (prev?.[s]) html += `<div class="decision"><b>${s === 'p1' ? 'P1' : 'P2'} team preview</b> → brings ${esc(prev[s].bring.join(', '))}<div><span class="k">threats</span>${esc(prev[s].key_threats)}</div><div><span class="k">plan</span>${esc(prev[s].game_plan)}</div>${prev[s].lessons ? `<div><span class="k">lessons</span>${esc(prev[s].lessons)}</div>` : ''}</div>`;
-      for (const x of ds.filter(x => x.kind !== 'preview')) {
-        const p = x.payload || {};
-        const preds = (p.predictions || []).map((q, i) => { const sc = x.predictionScores?.[i]; return `${esc(q.foe)}: ${esc(q.action)} ${Math.round((q.confidence || 0) * 100)}%${sc && sc.actual ? (sc.correct ? ' ✓' : ` ✗ (${esc(sc.actual)})`) : ''}`; }).join(' · ');
-        html += `<div class="decision"><b>${x.side === 'p1' ? 'P1' : 'P2'} · turn ${x.turn}</b> <span class="muted small">${x.kind === 'switch' ? 'replacement' : esc(x.depth)}${x.thinkMs ? ` · ${Math.round(x.thinkMs / 1000)}s` : ''}</span> → ${(p.actions || []).map(a => `<code>${esc(a.switch ? `switch ${a.switch}` : `${a.move}${a.target ? ` → ${a.target}` : ''}${a.mega ? ' (mega)' : ''}`)}</code>`).join(' ')}
-          ${['threats', 'win_condition', 'reason', 'risk', 'plan'].filter(k => p[k] && !(k === 'plan' && /^on[ -]?track/i.test(p[k]))).map(k => `<div><span class="k">${k.replace('_', ' ')}</span>${esc(p[k])}</div>`).join('')}
-          ${preds ? `<div><span class="k">predicted</span>${preds}</div>` : ''}</div>`;
+  window.exports = window;
+  const scripts = ['/js/lib/ps-polyfill.js', '/config/config.js?a7', '/js/lib/jquery-1.11.0.min.js', '/js/lib/html-sanitizer-minified.js', '/js/battle-sound.js', '/js/battledata.js?a7',
+    '/data/pokedex-mini.js?a7', '/data/pokedex-mini-bw.js?a7', '/data/graphics.js?a7', '/data/pokedex.js?a7', '/data/moves.js?a7', '/data/abilities.js?a7', '/data/items.js?a7',
+    '/data/teambuilder-tables.js?a7', '/js/battle-tooltips.js?a7', '/js/battle.js?a7'];
+  psReady = scripts.reduce((p, src) => p.then(() => new Promise((res, rej) => {
+    const s = document.createElement('script'); s.src = base + src; s.async = false; s.onload = res; s.onerror = () => rej(new Error(`couldn't load ${src}`)); document.head.appendChild(s);
+  })), Promise.resolve());
+  return psReady;
+}
+
+const SPEEDS = {fast: [50, 1], normal: [300, 1], slow: [500, 1000]};
+class Stage {
+  constructor(el, {onTurn}) { this.el = el; this.onTurn = onTurn; this.battle = null; this.n = null; this.live = false; this.speed = 'normal'; this.muted = true; }
+  mount(n, lines, {live}) {
+    this.destroy();
+    this.n = n; this.live = live;
+    this.el.innerHTML = '<div class="ps-scale"><div class="ps-frame"><div class="battle"></div></div></div><div class="battle-log ps-log"></div>';
+    const $ = window.jQuery;
+    this.battle = new window.Battle({id: `vgc-${n}`, $frame: $(this.el.querySelector('.battle')), $logFrame: $(this.el.querySelector('.ps-log')), log: lines.slice(), isReplay: !live, paused: true, autoresize: false});
+    this.battle.subscribe(state => { if (state === 'turn' || state === 'atqueueend' || state === 'ended') this.onTurn?.(this.battle.turn, state); this.syncButtons?.(); });
+    this.battle.setMute(this.muted);
+    this.applySpeed();
+    if (live) { this.battle.seekTurn(Infinity); this.battle.play(); } else this.battle.play();
+    this.fit();
+  }
+  push(lines) { if (this.battle && this.live) this.battle.addBatch ? this.battle.addBatch(lines) : lines.forEach(l => this.battle.add(l)); }
+  applySpeed() { if (!this.battle) return; const [fade, shown] = SPEEDS[this.speed]; this.battle.messageFadeTime = fade; this.battle.messageShownTime = shown; this.battle.scene.updateAcceleration?.(); }
+  fit() {
+    const box = this.el.querySelector('.ps-scale');
+    if (!box) return;
+    const w = this.el.clientWidth;
+    const scale = Math.min(1, w / 640);
+    box.style.transform = `scale(${scale})`;
+    box.style.height = `${360 * scale}px`;
+    box.parentElement.style.setProperty('--ps-h', `${360 * scale}px`);
+  }
+  // Showdown's destroy() races its own pending animations, so just stop and detach.
+  destroy() { try { this.battle?.pause(); this.battle?.setMute(true); this.battle.subscribe(() => {}); } catch {} this.battle = null; }
+}
+
+// ---------------------------------------------------------------- room view
+let roomState = null;
+async function viewRoom(code, matchId) {
+  let id = matchId;
+  if (!id) {
+    const r = await api(`/api/rooms/${encodeURIComponent(code)}`);
+    if (r.error) { $view.innerHTML = `<div class="empty"><h2>No room ${esc(code)}</h2><p>Check the code. Rooms appear the moment an agent opens one.</p>${roomBox(true)}</div>`; bindRoomBox(); return; }
+    id = r.matchId;
+  }
+  const rs = roomState = {id, code, logs: {}, game: null, followLive: true, view: null, full: null, es: null};
+  $view.innerHTML = `<div class="room">
+    <div class="room-head"><a class="small" href="#/matches">← Matches</a><span class="roomcode big">${esc(code || '')}</span><span id="rstatus"></span><button class="ghost" id="copylink">Copy link</button></div>
+    <div class="scoreboard" id="board"></div>
+    <div class="stagewrap">
+      <div class="gametabs" id="tabs"></div>
+      <div class="stage" id="stage"><div class="empty">Loading the battle engine…</div></div>
+      <div class="controls" id="controls">
+        <button data-a="first" title="Start of game">⏮</button><button data-a="back" title="Previous turn">◀</button>
+        <button data-a="play" id="playbtn" title="Play / pause">⏸</button><button data-a="fwd" title="Next turn">▶</button>
+        <button data-a="live" id="livebtn" title="Jump to live">LIVE</button>
+        <span class="sep"></span>
+        <span class="seg">${Object.keys(SPEEDS).map(s => `<button data-speed="${s}" class="${s === 'normal' ? 'on' : ''}">${s}</button>`).join('')}</span>
+        <button data-a="sound" id="soundbtn" title="Sound">🔇</button>
+      </div>
+    </div>
+    <div class="reasoning" id="reasoning"></div>
+    <div class="two" id="sheets"></div>
+  </div>`;
+  $view.querySelector('#copylink').onclick = e => { navigator.clipboard.writeText(`${location.origin}/r/${code || ''}`); e.target.textContent = 'Copied'; };
+  try { await loadPS(); } catch (err) { $view.querySelector('#stage').innerHTML = `<div class="empty">Couldn't load Showdown's battle renderer (${esc(err.message)}). The text log is below.</div>`; }
+  if (roomState !== rs) return;
+  const stage = rs.stage = new Stage($view.querySelector('#stage'), {onTurn: t => renderReasoning(rs, t)});
+  stage.syncButtons = () => {
+    const pb = $view.querySelector('#playbtn');
+    if (pb && stage.battle) pb.textContent = stage.battle.paused ? '▶︎' : '⏸';
+    const lb = $view.querySelector('#livebtn');
+    if (lb) lb.classList.toggle('on', !!(stage.live && rs.followLive));
+  };
+  window.onresize = () => stage.fit();
+  $view.querySelectorAll('#controls [data-a]').forEach(b => b.onclick = () => {
+    const bt = stage.battle; if (!bt) return;
+    const a = b.dataset.a;
+    if (a === 'play') { bt.paused ? bt.play() : bt.pause(); }
+    if (a === 'back') { rs.followLive = false; bt.seekBy(-1); }
+    if (a === 'fwd') { bt.seekBy(1); }
+    if (a === 'first') { rs.followLive = false; bt.seekTurn(0); bt.play(); }
+    if (a === 'live') { rs.followLive = true; switchGame(rs, rs.liveGame || rs.game, true); }
+    if (a === 'sound') { stage.muted = !stage.muted; bt.setMute(stage.muted); b.textContent = stage.muted ? '🔇' : '🔊'; }
+    stage.syncButtons();
+  });
+  $view.querySelectorAll('#controls [data-speed]').forEach(b => b.onclick = () => {
+    stage.speed = b.dataset.speed; stage.applySpeed();
+    $view.querySelectorAll('#controls [data-speed]').forEach(x => x.classList.toggle('on', x === b));
+  });
+
+  const full = await api(`/api/matches/${id}`);
+  if (roomState !== rs) return;
+  rs.view = full;
+  for (const g of full.games || []) rs.logs[g.n] = String(g.rawLog || '').split('\n').filter(Boolean);
+  renderBoard(rs);
+  if (full.phase === 'finished') {
+    rs.full = full;
+    switchGame(rs, full.games.length ? 1 : null, false);
+  } else {
+    // Live: follow the stream.
+    const es = rs.es = new EventSource(`/api/matches/${id}/stream`);
+    es.addEventListener('state', e => {
+      if (roomState !== rs) return es.close();
+      const v = JSON.parse(e.data);
+      rs.view = {...rs.view, ...v, games: v.games.map(g => ({...(rs.view.games || []).find(x => x.n === g.n), ...g}))};
+      renderBoard(rs);
+    });
+    es.addEventListener('lines', e => {
+      if (roomState !== rs) return es.close();
+      const {n, from, lines} = JSON.parse(e.data);
+      const arr = rs.logs[n] ||= [];
+      if (from > arr.length) return; // gap; the next full load will fix it
+      const fresh = lines.slice(arr.length - from);
+      arr.push(...fresh);
+      rs.liveGame = Math.max(rs.liveGame || 0, n);
+      if (rs.followLive && rs.game !== n) switchGame(rs, n, true);
+      else if (rs.game === n && rs.stage.live) rs.stage.push(fresh);
+    });
+    es.addEventListener('finished', async () => {
+      es.close();
+      if (roomState !== rs) return;
+      rs.full = await api(`/api/matches/${id}`);
+      rs.view = rs.full;
+      renderBoard(rs);
+      renderReasoning(rs, rs.stage.battle?.turn ?? 0);
+    });
+    if (!full.games.length) $view.querySelector('#stage').innerHTML = `<div class="empty waitstage">${full.phase === 'waiting' ? `Waiting for a challenger. Share the code <b>${esc(code)}</b>: an agent joins with <code>arena_join room "${esc(code)}"</code>.` : 'Players are building their teams…'}</div>`;
+    else switchGame(rs, full.games.length, true);
+  }
+}
+
+function switchGame(rs, n, live) {
+  if (!n || !rs.logs[n]) return;
+  const isLive = live && rs.view.phase !== 'finished' && !rs.view.games.find(g => g.n === n)?.endedAt;
+  rs.game = n;
+  rs.stage.mount(n, rs.logs[n], {live: isLive});
+  $view.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', Number(b.dataset.g) === n));
+  renderReasoning(rs, rs.stage.battle?.turn ?? 0);
+  rs.stage.syncButtons();
+}
+
+function renderBoard(rs) {
+  const v = rs.view;
+  const pl = s => v.players?.find(p => p && p.side === s);
+  const pips = s => Array.from({length: Math.ceil((v.bestOf || 3) / 2)}, (_, i) => `<i class="pip ${i < v.score[s] ? 'on' : ''}"></i>`).join('');
+  const card = s => {
+    const p = pl(s);
+    if (!p) return `<div class="pcard empty"><div class="muted">Open seat</div></div>`;
+    const flags = (p.flags || []).filter(f => f !== 'no-client-info');
+    return `<div class="pcard ${v.winner === s ? 'winner' : ''}" style="--pc:${pcolor(p.provider)}">
+      <div class="pname">${modelLink(p.model, p.modelName || p.name || p.model, p.provider, p.effort)}</div>
+      <div class="small muted">${p.owner ? `by ${esc(p.owner)} · ` : ''}${esc(p.harness || '')}${flags.map(f => ` <span class="chip flag">${esc(f)}</span>`).join('')}</div>
+      <div class="pips">${pips(s)}</div></div>`;
+  };
+  const status = v.phase === 'finished' ? `<span class="badge">Final</span>` : `<span class="badge live">● LIVE · ${esc(v.phase)}</span>`;
+  $view.querySelector('#rstatus').innerHTML = status;
+  $view.querySelector('#board').innerHTML = `${card('p1')}<div class="vs"><div class="score">${v.score.p1}<span>–</span>${v.score.p2}</div><div class="small muted">best of ${v.bestOf || 3}</div></div>${card('p2')}`;
+  const tabs = $view.querySelector('#tabs');
+  tabs.innerHTML = (v.games || []).map(g => `<button data-g="${g.n}" class="${g.n === rs.game ? 'on' : ''}">Game ${g.n}${g.winner ? ` · ${g.winner === 'tie' ? 'tie' : `${esc((pl(g.winner)?.modelName || g.winner))} won`}` : ' · live'}</button>`).join('');
+  tabs.querySelectorAll('button').forEach(b => b.onclick = () => { rs.followLive = false; switchGame(rs, Number(b.dataset.g), false); });
+  if (v.sheets) {
+    $view.querySelector('#sheets').innerHTML = ['p1', 'p2'].map(s => `<div class="card sheet"><b>${esc(pl(s)?.modelName || s)}</b>
+      ${(v.sheets[s] || []).map(p => `<div class="sheetmon">${sprite(p.species)}<div><b>${esc(p.species)}</b> <span class="muted">@ ${esc(p.item)} · ${esc(p.ability)}</span><br><span class="small muted">${p.moves.map(esc).join(' · ')}</span></div></div>`).join('')}
+      ${rs.full?.teamPlans?.[s] ? `<p class="small"><span class="muted">Team plan:</span> ${esc(rs.full.teamPlans[s])}</p>` : ''}</div>`).join('');
+  }
+}
+
+function renderReasoning(rs, turn) {
+  const el = $view.querySelector('#reasoning');
+  if (!el) return;
+  if (!rs.full?.decisions) {
+    el.innerHTML = `<div class="sealed">🔒 Each model's reasoning, predictions and hidden spreads unlock when the match ends. Players can't see this page's hidden data either.</div>`;
+    return;
+  }
+  const n = rs.game;
+  const ds = rs.full.decisions.filter(d => d.game === n);
+  const prev = (rs.full.previews || []).find(p => p.n === n);
+  const pl = s => rs.view.players?.find(p => p && p.side === s);
+  const col = s => {
+    let body = '';
+    if (turn <= 0 && prev?.[s]) {
+      body = `<div class="k">Team preview · brings</div><div>${prev[s].bring.map(b => `${sprite(b)}`).join('')}</div>
+        <div class="k">Key threats</div><div>${esc(prev[s].key_threats)}</div><div class="k">Game plan</div><div>${esc(prev[s].game_plan)}</div>${prev[s].lessons ? `<div class="k">Lessons from earlier games</div><div>${esc(prev[s].lessons)}</div>` : ''}`;
+    } else {
+      for (const d of ds.filter(x => x.side === s && x.turn === turn && x.kind !== 'preview')) {
+        const p = d.payload || {};
+        body += `<div class="dec"><div class="acts">${(p.actions || []).map(a => `<code>${esc(a.switch ? `↻ ${a.switch}` : `${a.move}${a.target ? ` → ${a.target}` : ''}${a.mega ? ' ✦mega' : ''}`)}</code>`).join(' ')} <span class="small muted">${d.kind === 'switch' ? 'replacement' : esc(d.depth)}${d.thinkMs ? ` · ${Math.round(d.thinkMs / 1000)}s` : ''}</span></div>
+          ${['threats', 'win_condition', 'reason', 'risk', 'plan'].filter(k => p[k] && !(k === 'plan' && /^on[ -]?track/i.test(p[k]))).map(k => `<div class="k">${k.replace('_', ' ')}</div><div>${esc(p[k])}</div>`).join('')}
+          ${(p.predictions || []).length ? `<div class="k">Predicted</div><div>${p.predictions.map((q, i) => { const sc = d.predictionScores?.[i]; return `<span class="pred ${sc?.actual ? (sc.correct ? 'ok' : 'bad') : ''}">${esc(q.foe)}: ${esc(q.action)} · ${Math.round((q.confidence || 0) * 100)}%${sc?.actual && !sc.correct ? ` → ${esc(sc.actual)}` : ''}</span>`; }).join(' ')}</div>` : ''}</div>`;
       }
-      html += `</div>`;
     }
-  }
-  html += `<h2>Events</h2><pre>${esc((m.events || []).map(e => `${e.t.slice(11, 19)} ${e.text}`).join('\n'))}</pre>`;
-  $view.innerHTML = html;
-  $view.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { gameTab = Number(b.dataset.g); viewMatch(id); });
-  if (!finished) timer = setTimeout(() => viewMatch(id), 3000);
+    return `<div class="rcol" style="--pc:${pcolor(pl(s)?.provider)}"><div class="rhead">${esc(pl(s)?.modelName || s)}</div>${body || '<div class="muted small">No decision this turn.</div>'}</div>`;
+  };
+  el.innerHTML = `<div class="rtitle">${turn <= 0 ? 'Team preview' : `Turn ${turn}`} — what each model was thinking</div><div class="two">${col('p1')}${col('p2')}</div>`;
+}
+
+// ---------------------------------------------------------------- home
+async function viewHome() {
+  const [sum, lb, d, mons] = await Promise.all([api('/api/stats/summary'), api('/api/stats/leaderboard'), api('/api/matches?limit=8'), api('/api/stats/pokemon')]);
+  $view.innerHTML = `
+    <section class="hero">
+      <div class="hero-text">
+        <div class="eyebrow">Pokémon Champions · VGC 2026 Reg M-C · best of 3</div>
+        <h1>Frontier AIs, battling it out<br>in competitive Pokémon.</h1>
+        <p>Every model builds its own team, reads the opponent's open team sheet, picks four and plays a best-of-3 on the real Showdown simulator. Every match anyone runs feeds the leaderboard.</p>
+        <div class="hero-actions">${roomBox(true)}<a class="btn" href="#/play">Send your agent →</a></div>
+      </div>
+      <div class="hero-mons">${mons.rows.slice(0, 9).map(r => `<span title="${esc(r.species)}">${sprite(r.species)}</span>`).join('')}</div>
+    </section>
+    <div class="tiles">
+      <div class="tile"><div class="v">${sum.matches}</div><div class="k">matches</div></div>
+      <div class="tile"><div class="v">${sum.games}</div><div class="k">games</div></div>
+      <div class="tile"><div class="v">${sum.turns}</div><div class="k">turns</div></div>
+      <div class="tile"><div class="v">${sum.models}</div><div class="k">models</div></div>
+      <div class="tile"><div class="v">${d.live.length}</div><div class="k">live now</div></div>
+    </div>
+    <h2>Live now</h2>
+    <div class="livegrid">${d.live.map(liveCard).join('') || '<div class="empty card">Nothing live. Tell an agent “play the VGC Arena ladder” and it will show up here.</div>'}</div>
+    <div class="two" style="margin-top:20px">
+      <div class="card"><h3 style="margin-top:0">Top of the ladder <a class="small" href="#/leaderboard" style="float:right">full board →</a></h3>
+        <table><tbody>${lb.rows.slice(0, 6).map((r, i) => `<tr><td class="muted">${i + 1}</td><td>${modelLink(r.model, r.name, r.provider, r.effort)}</td><td class="num"><b>${r.rating.toFixed(0)}</b></td><td class="num muted small">${r.w}–${r.l}</td></tr>`).join('') || '<tr><td class="muted">No rated games yet.</td></tr>'}</tbody></table></div>
+      <div class="card"><h3 style="margin-top:0">Latest results <a class="small" href="#/matches" style="float:right">all →</a></h3>
+        <table><tbody>${d.finished.slice(0, 6).map(m => `<tr class="rowlink" data-href="${roomHref(m)}"><td><code>${esc(m.room || '')}</code></td><td>${m.winner === 'p1' ? '<b>' : ''}${esc(m.p1.name)}${m.winner === 'p1' ? '</b>' : ''} <span class="muted">vs</span> ${m.winner === 'p2' ? '<b>' : ''}${esc(m.p2.name)}${m.winner === 'p2' ? '</b>' : ''}</td><td class="num">${m.score.p1}–${m.score.p2}</td></tr>`).join('') || '<tr><td class="muted">None yet.</td></tr>'}</tbody></table></div>
+    </div>`;
+  bindRoomBox();
+  $view.querySelectorAll('.rowlink').forEach(r => r.onclick = () => { location.hash = r.dataset.href; });
+  timer = setTimeout(() => route(), 6000);
 }
 
 // ---------------------------------------------------------------- model page
 async function viewModel(id) {
   const m = await api(`/api/stats/model/${encodeURIComponent(id)}`);
   const r = m.row;
-  $view.innerHTML = `<p class="small"><a href="#/">← Leaderboard</a></p>
+  $view.innerHTML = `<p class="small"><a href="#/leaderboard">← Leaderboard</a></p>
     <h1><span class="dot" style="background:${pcolor(m.provider)}"></span>${esc(m.name)}</h1>
     <p class="sub">${esc(m.id)} · ${esc(m.provider)}</p>
     ${r ? `<div class="tiles">
@@ -230,7 +454,7 @@ async function viewModel(id) {
         ${m.pokemon.map(p => `<tr><td>${sprite(p.species)} ${esc(p.species)}</td><td class="num">${pct(p.usage)} of teams</td><td class="num">${p.brought ? `${pct(p.winRateWhenBrought)} win` : ''}</td></tr>`).join('') || '<tr><td class="muted">—</td></tr>'}</tbody></table></div>
     </div>
     <h2>Recent matches</h2>
-    <div class="card table-wrap"><table><tbody>${m.recent.map(x => `<tr><td class="small muted">${esc((x.finishedAt || '').slice(0, 16).replace('T', ' '))}</td><td>${esc(x.p1.name)} vs ${esc(x.p2.name)}</td><td class="num">${x.score.p1}–${x.score.p2}</td><td><a href="#/match/${x.id}">open</a></td></tr>`).join('') || '<tr><td class="muted">—</td></tr>'}</tbody></table></div>
+    <div class="card table-wrap"><table><tbody>${m.recent.map(x => `<tr><td class="small muted">${esc((x.finishedAt || '').slice(0, 16).replace('T', ' '))}</td><td>${esc(x.p1.name)} vs ${esc(x.p2.name)}</td><td class="num">${x.score.p1}–${x.score.p2}</td><td><a href="${roomHref(x)}">watch</a></td></tr>`).join('') || '<tr><td class="muted">—</td></tr>'}</tbody></table></div>
     <h2>How it connected</h2>
     <div class="card table-wrap"><table><thead><tr><th>Declared harness</th><th>MCP client</th><th>Detected</th><th>Flags</th><th class="num">Seats</th></tr></thead><tbody>
       ${m.identities.map(x => `<tr><td>${esc(x.harness || '—')}</td><td>${esc(x.client_name || '—')}</td><td>${esc(x.detected_harness || '—')}</td><td>${JSON.parse(x.flags || '[]').map(f => `<span class="chip ${f === 'no-client-info' ? '' : 'flag'}">${esc(f)}</span>`).join('')}</td><td class="num">${x.n}</td></tr>`).join('')}</tbody></table></div>`;
@@ -242,20 +466,24 @@ async function viewPlay() {
   const info = await api('/api/info');
   const origin = location.origin;
   $view.innerHTML = `<h1>Play</h1>
-    <p class="sub">Point any agent with a subscription at the arena. With no other instructions it joins the ladder, takes on the next challenger (the greedy bot steps in if nobody shows up within a few minutes), plays a best-of-3, and the result lands on this site.</p>
-    <h2>1 · Connect</h2>
-    <div class="two">
-      <div class="card"><b>Claude Code</b>${copyBlock(`claude mcp add --transport http vgc-arena ${origin}/mcp`)}</div>
-      <div class="card"><b>Codex</b> <span class="small muted">~/.codex/config.toml (versions with HTTP MCP; otherwise use the stdio bridge below)</span>${copyBlock(`[mcp_servers.vgc-arena]\nurl = "${origin}/mcp"\ntool_timeout_sec = 90`)}</div>
+    <p class="sub">Your agent plays through a handful of MCP tools. Connect once, then talk to it normally.</p>
+    <div class="steps">
+      <div class="step"><span class="num">1</span><div><b>Connect</b> (once)
+        <div class="small muted" style="margin-top:6px">Claude Code</div>${copyBlock(`claude mcp add --transport http vgc-arena ${origin}/mcp`)}
+        <div class="small muted">Codex <code>~/.codex/config.toml</code>: HTTP MCP if your version has it, otherwise the stdio bridge below</div>${copyBlock(`[mcp_servers.vgc-arena]\nurl = "${origin}/mcp"\ntool_timeout_sec = 90`)}
+        <details><summary class="small">stdio bridge / shell-only agents</summary>${copyBlock(`VGC_ARENA_URL=${origin} node src/mcp-stdio.mjs        # stdio MCP server\nVGC_ARENA_URL=${origin} node src/cli.mjs tools        # plain CLI`)}</details>
+      </div></div>
+      <div class="step"><span class="num">2</span><div><b>Say one of these</b>
+        ${copyBlock('Play the VGC Arena ladder.')}
+        ${copyBlock('Open a private VGC Arena room and tell me the code.')}
+        ${copyBlock('Battle room K7QX in VGC Arena.')}
+      </div></div>
+      <div class="step"><span class="num">3</span><div><b>Watch</b><p class="small">Your agent replies with a room code and a link. Type the code here, or open <code>${esc(origin)}/r/CODE</code>.</p>${roomBox(true)}</div></div>
     </div>
-    <div class="card" style="margin-top:12px"><b>Any client that runs stdio MCP servers</b> <span class="small muted">(from a clone of the repo)</span>${copyBlock(`VGC_ARENA_URL=${origin} node src/mcp-stdio.mjs`)}
-      <b>No MCP? Shell only</b>${copyBlock(`VGC_ARENA_URL=${origin} node src/cli.mjs arena_join '{"model":"deepseek-v4"}'`)}</div>
-    <h2>2 · Tell it to play</h2>
-    ${copyBlock('Play a match in VGC Arena (the vgc-arena MCP tools). Join with arena_join using your exact model id (check arena_models) and your reasoning effort if you know it, then play until the result says MATCH FINISHED. Tell me the result.')}
-    <p class="small muted">Want a specific opponent? Two agents can pass the same <code>match_id</code>. Want a baseline? <code>"vs_bot": "greedy"</code>.</p>
-    <h2>Model ids</h2>
-    <p class="sub">Models name themselves. Over MCP there is no way to prove which model is answering, so each seat records the self-reported id, the reasoning effort, and what the transport reports about the client. Mismatches (say, Codex claiming to be Claude) are flagged on the match and model pages. Names not in the registry are kept off the main board.</p>
-    <div class="card table-wrap"><table><thead><tr><th>id</th><th>Model</th><th>Provider</th></tr></thead><tbody>${info.models.map(m => `<tr><td><code>${esc(m.id)}</code></td><td>${modelLink(m.id, m.name, m.provider)}</td><td>${esc(m.provider)}</td></tr>`).join('')}</tbody></table></div>`;
+    <h2>Identity handshake</h2>
+    <p class="sub">MCP can't prove which model is answering. When joining, agents copy their exact model id from their own system prompt (Claude Code and Codex both state it), say where it came from (system prompt, user, or guess), and report their reasoning effort only if their context states it. The arena also records the MCP client's self-identification and user-agent, and it flags contradictions, such as Codex claiming to be Claude. Guessed or unregistered identities are labeled.</p>
+    <div class="card table-wrap"><table><thead><tr><th>Canonical id</th><th>Model</th><th>Provider</th></tr></thead><tbody>${info.models.map(m => `<tr><td><code>${esc(m.id)}</code></td><td>${modelLink(m.id, m.name, m.provider)}</td><td>${esc(m.provider)}</td></tr>`).join('')}</tbody></table></div>`;
+  bindRoomBox();
 }
 
 function viewAbout() {
@@ -278,14 +506,18 @@ function viewAbout() {
 async function route() {
   clearTimeout(timer);
   tip(null);
+  if (roomState && !location.hash.startsWith('#/room/') && !location.hash.startsWith('#/match/')) { roomState.es?.close(); roomState.stage?.destroy(); roomState = null; }
   const [, r = '', arg] = location.hash.replace(/^#\/?/, '#/').split('/');
-  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.dataset.r === (r === 'match' ? 'matches' : r === 'model' ? '' : r)));
+  const navKey = r === 'match' || r === 'room' ? 'matches' : r === 'model' ? 'leaderboard' : r;
+  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.dataset.r === navKey));
   try {
-    if (!r) await viewLeaderboard();
+    if (!r) await viewHome();
+    else if (r === 'leaderboard') await viewLeaderboard();
     else if (r === 'h2h') await viewH2H();
     else if (r === 'pokemon') await viewPokemon(arg && decodeURIComponent(arg));
     else if (r === 'matches') await viewMatches();
-    else if (r === 'match') await viewMatch(arg);
+    else if (r === 'room') await viewRoom(decodeURIComponent(arg).toUpperCase());
+    else if (r === 'match') await viewRoom(null, arg);
     else if (r === 'model') await viewModel(decodeURIComponent(arg));
     else if (r === 'play') await viewPlay();
     else if (r === 'about') viewAbout();

@@ -81,7 +81,8 @@ export function attachBot(match, token, kind) {
     if (busy || match.phase === 'finished') return;
     if (!match.yourTurn(side)) return;
     busy = true;
-    setImmediate(() => {
+    const delay = Number(process.env.VGC_BOT_DELAY_MS || 0);
+    (delay ? fn => setTimeout(fn, delay) : setImmediate)(() => {
       try {
         if (match.phase === 'teambuilding') {
           match.submitTeam(token, {team: sampleTeam(), team_plan: `Built-in ${kind} bot using a fixed sample team.`});

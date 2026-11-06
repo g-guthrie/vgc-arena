@@ -180,7 +180,7 @@ export class Stats {
       from matches m left join seats a on a.match_id = m.id and a.side = 'p1' left join seats b on b.match_id = m.id and b.side = 'p2'
       ${filter} order by m.finished_at desc limit ?`, ...(model ? [model, limit] : [limit]));
     return rows.map(r => ({
-      id: r.id, label: r.label, finishedAt: r.finished_at, winner: r.winner, score: {p1: r.score_p1, p2: r.score_p2}, turns: r.turns, endReason: r.end_reason,
+      id: r.id, room: r.room, label: r.label, finishedAt: r.finished_at, winner: r.winner, score: {p1: r.score_p1, p2: r.score_p2}, turns: r.turns, endReason: r.end_reason,
       p1: {model: r.a_model, name: modelInfo(r.a_model)?.name || r.a_model, effort: r.a_effort, owner: r.a_owner},
       p2: {model: r.b_model, name: modelInfo(r.b_model)?.name || r.b_model, effort: r.b_effort, owner: r.b_owner},
     }));

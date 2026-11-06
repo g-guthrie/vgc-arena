@@ -22,15 +22,26 @@ const KEYS = new Map((process.env.VGC_KEYS || '').split(',').filter(Boolean).map
 export class Arena {
   constructor({artifactsDir, db} = {}) {
     this.matches = new Map();
+    this.rooms = new Map();
     this.byToken = new Map();
     this.artifactsDir = artifactsDir || process.env.VGC_ARTIFACTS || path.join(ROOT_DIR, 'artifacts');
     fs.mkdirSync(this.artifactsDir, {recursive: true});
     this.db = db || new StatsDB(path.join(this.artifactsDir, 'arena.db'));
   }
 
+  newRoomCode() {
+    const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    for (;;) {
+      const code = Array.from({length: 4}, () => A[Math.floor(Math.random() * A.length)]).join('');
+      if (!this.rooms.has(code) && !this.db.get('select 1 from matches where room = ?', code)) return code;
+    }
+  }
+
   createMatch(opts = {}) {
-    const match = new Match(opts);
+    const match = new Match({...opts, room: opts.room || this.newRoomCode()});
+    if (opts.reserved) match.reserved = true;
     this.matches.set(match.id, match);
+    this.rooms.set(match.room, match);
     match.on('finished', () => {
       try {
         match.artifactPaths = writeArtifacts(match, this.artifactsDir);
@@ -67,10 +78,13 @@ export class Arena {
   // Default: queue for the next challenger. Prefer a different model; accept a
   // mirror only after someone has waited a while; fall back to the greedy bot
   // if nobody comes.
-  join({name, model, effort, harness, owner, key, match_id, vs_bot, fallback_bot_after_sec}, ctx = {}) {
+  // room: a friend's 4-character code to join, or "new" to open a private room.
+  join({name, model, effort, model_source, harness, owner, key, room, match_id, vs_bot, fallback_bot_after_sec}, ctx = {}) {
     const identity = resolveModel(model, effort);
+    identity.source = model_source || 'unspecified';
     const client = ctx.client || {};
     const {detectedHarness, flags} = identityFlags(identity, client);
+    if (identity.source === 'guess') flags.push('model-self-guessed');
     let ownerName = owner || '';
     let ownerVerified = false;
     if (KEYS.size) {
@@ -79,7 +93,13 @@ export class Arena {
       ownerVerified = true;
     }
     let match;
-    if (match_id) match = this.get(match_id);
+    const code = room && String(room).trim().toUpperCase().replace(/^#/, '');
+    if (code === 'NEW' || code === 'PRIVATE') match = this.createMatch({label: 'private room', reserved: true});
+    else if (code) {
+      match = this.rooms.get(code);
+      if (!match) throw new Error(`No open room ${code}. Check the code, or use room "new" to open one.`);
+      if (match.seats.p1 && match.seats.p2) throw new Error(`Room ${code} is full.`);
+    } else if (match_id) match = this.get(match_id);
     else if (vs_bot) match = this.createMatch({label: `vs ${vs_bot} bot`});
     else {
       const open = [...this.matches.values()].filter(m => m.phase === 'waiting' && !m.reserved && !m.fixedTeams && (m.seats.p1 ? !m.seats.p2 : false));
@@ -90,7 +110,7 @@ export class Arena {
     const {token, side} = match.join({name, identity, harness, client, owner: ownerName, ownerVerified, flags, detectedHarness});
     this.byToken.set(token, match);
     if (vs_bot) this.addBot(match.id, vs_bot);
-    else if (!match_id && match.phase === 'waiting') {
+    else if (!match_id && !code && match.phase === 'waiting') {
       const after = Number(fallback_bot_after_sec ?? DEFAULT_BOT_FALLBACK_SEC);
       if (after > 0) {
         match.botFallbackAt = Date.now() + after * 1000;
@@ -122,7 +142,8 @@ export class Arena {
 
   live() {
     return [...this.matches.values()].filter(m => m.phase !== 'finished').map(m => ({
-      id: m.id, label: m.label, phase: m.phase, score: m.score, createdAt: m.createdAt,
+      id: m.id, room: m.room, label: m.label, phase: m.phase, score: m.score, createdAt: m.createdAt, private: !!m.reserved,
+      actives: m.currentGame ? ['p1', 'p2'].map(s => m.currentGame.side(s).active.map(p => (p && !p.fainted ? {species: (p.illusion || p).species.name, hp: Math.round((p.hp / p.maxhp) * 100)} : null))) : null,
       players: ['p1', 'p2'].map(s => m.seats[s] && {side: s, model: m.seats[s].model, name: m.seats[s].identity?.name, effort: m.seats[s].identity?.effort, provider: m.seats[s].identity?.provider, owner: m.seats[s].owner}),
       game: m.game?.n || 0, turn: m.currentGame?.turn || 0, botFallbackAt: m.botFallbackAt || null,
     })).reverse();

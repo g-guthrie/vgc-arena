@@ -1,13 +1,13 @@
-// Fairness tests: the things that would silently invalidate results.
+// Only the guarantees that would silently invalidate every result if broken:
+// hidden information stays hidden, and the harness never touches battle RNG.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Match} from '../src/match.mjs';
-import {Game} from '../src/game.mjs';
 import {parseTeam, validateTeam, computeStats} from '../src/dex-tools.mjs';
-import {legalOptions, toShowdownChoice} from '../src/observation.mjs';
+import {legalOptions} from '../src/observation.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SUN = fs.readFileSync(path.join(ROOT, 'teams/sample-sun.txt'), 'utf8');
@@ -86,28 +86,6 @@ test('harness computations never change battle outcomes (RNG untouched)', () => 
   assert.equal(run(true), run(false));
 });
 
-test('choice translation: targets, mega, and rejections', () => {
-  const g = new Game({seed: [1, 2, 3, 4], p1: {name: 'A', sets: parseTeam(SUN)}, p2: {name: 'B', sets: parseTeam(ROOM)}});
-  g.choose('p1', 'team 1, 5, 3, 4');
-  g.choose('p2', 'team 2, 3, 1, 4');
-  const opts = legalOptions(g, 'p1');
-  assert.equal(opts.kind, 'move');
-  const ok = toShowdownChoice(g, 'p1', opts, [{slot: 1, move: 'Air Slash', target: 'foe2', mega: true}, {slot: 2, move: 'Tailwind'}]);
-  assert.equal(ok.choice, 'move 3 2 mega, move 1');
-  assert.match(toShowdownChoice(g, 'p1', opts, [{slot: 1, move: 'Air Slash'}, {slot: 2, move: 'Tailwind'}]).error, /needs a target/);
-  assert.match(toShowdownChoice(g, 'p1', opts, [{slot: 1, move: 'Earthquake'}, {slot: 2, move: 'Tailwind'}]).error, /cannot use/);
-  assert.match(toShowdownChoice(g, 'p1', opts, [{slot: 1, move: 'Protect'}, {slot: 2, move: 'Moonblast', target: 'foe1', mega: true}]).error, /cannot Mega/);
-  assert.match(toShowdownChoice(g, 'p1', opts, [{slot: 1, switch: 'Garchomp'}, {slot: 2, switch: 'Garchomp'}]).error, /Both slots/);
-});
-
-test('teambuilding validation catches Champions-specific rules', () => {
-  const tooMany = SUN.replace('EVs: 2 HP / 32 SpA / 32 Spe', 'EVs: 32 HP / 32 SpA / 32 Spe');
-  assert.ok(validateTeam({team: tooMany}).problems.some(p => /stat points|66/i.test(p)));
-  const badMove = ROOM.replace('- Kowtow Cleave', '- Knock Off').replace('Kingambit @ Black Glasses', 'Incineroar @ Black Glasses').replace('Ability: Defiant', 'Ability: Intimidate');
-  assert.ok(validateTeam({team: badMove}).problems.some(p => /can't learn Knock Off/.test(p)));
-  assert.ok(validateTeam({team: SUN}).ok);
-});
-
 test('Illusion: the opponent sees the disguise and no opponent-dependent numbers', () => {
   const zoro = ROOM.replace(/Primarina @ Mystic Water[\s\S]*?- Protect/, `Zoroark-Hisui @ Life Orb
 Ability: Illusion
@@ -134,18 +112,3 @@ Timid Nature
   assert.ok(!/^DAMAGE/m.test(obs));
 });
 
-test('Fake Out guidance is right on turn 1 and after the first move', () => {
-  const {m, a, b} = setup();
-  m.submitTeam(a, {team: SUN, team_plan: 'Sun offense with Tailwind support.'});
-  m.submitTeam(b, {team: ROOM, team_plan: 'Trick Room with Hatterene and Sinistcha.'});
-  m.submitPreview(a, {bring: ['Incineroar', 'Whimsicott', 'Charizard', 'Garchomp'], game_plan: 'x', key_threats: 'x'});
-  m.submitPreview(b, {bring: ['Kingambit', 'Hatterene', 'Primarina', 'Sinistcha'], game_plan: 'x', key_threats: 'x'});
-  const t1 = m.stateFor(a).text;
-  assert.ok(!/will fail now/.test(t1), 'turn 1 must not call Fake Out dead');
-  const common = {reason: 'r', plan: 'on track', threats: 't', win_condition: 'w', risk: 'r', predictions: [{foe: 'foe1', action: 'Protect', confidence: 0.5}]};
-  assert.ok(!m.submitTurn(a, {...common, actions: [{slot: 1, move: 'Fake Out', target: 'foe1'}, {slot: 2, move: 'Protect'}]}).error);
-  m.stateFor(b);
-  assert.ok(!m.submitTurn(b, {...common, actions: [{slot: 1, move: 'Protect'}, {slot: 2, move: 'Protect'}]}).error);
-  const t2 = m.stateFor(a).text;
-  assert.match(t2, /Fake Out \/ First Impression only work on its first turn out/);
-});

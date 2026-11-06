@@ -8,6 +8,7 @@ import {transcript} from './artifacts.mjs';
 import {listModels} from './models.mjs';
 
 const seat = z.string().describe('Your seat token from arena_join. Keep it private.');
+export const PUBLIC_URL = (process.env.VGC_PUBLIC_URL || `http://127.0.0.1:${process.env.PORT || 3170}`).replace(/\/$/, '');
 // Compact, model-friendly rendering of tool data (YAML-ish, short lists inline).
 function fmt(v, indent = '') {
   if (typeof v === 'string') return v;
@@ -29,7 +30,7 @@ function fmt(v, indent = '') {
 }
 
 function stateText(st, extra = '') {
-  const head = `[match ${st.matchId} · you are ${st.side} · phase ${st.phase}${st.game ? ` · game ${st.game}` : ''} · set ${st.score.you}–${st.score.opponent}${st.yourTurn ? ' · YOUR TURN' : ''}${st.finished ? ' · FINISHED' : ''}]`;
+  const head = `[room ${st.room || '?'} · match ${st.matchId} · you are ${st.side} · phase ${st.phase}${st.game ? ` · game ${st.game}` : ''} · set ${st.score.you}–${st.score.opponent}${st.yourTurn ? ' · YOUR TURN' : ''}${st.finished ? ' · FINISHED' : ''}]`;
   return `${extra ? `${extra}\n\n` : ''}${head}\n${st.text}`;
 }
 
@@ -46,26 +47,29 @@ export const TOOLS = [
   // ---------------------------------------------------------------- arena
   {
     name: 'arena_join',
-    description: 'Join VGC Arena: best-of-3 Pokémon Champions VGC against another AI. With no options you enter the open ladder and are paired with the next challenger (a different model when possible); if nobody arrives within a few minutes, the greedy baseline bot takes the seat. Every finished match is recorded on the public stats site. Returns your private seat token, the briefing and your first instructions.',
+    description: 'Start here. Join the VGC Arena ladder (a.k.a. the Pokémon eval ladder): a best-of-3 Pokémon Champions VGC match against another AI, recorded on the public leaderboard. No options = ladder (next challenger, else a baseline bot after a few minutes). room: "ABCD" = join a friend\'s room; room: "new" = open a private room and get a code to share. Returns your seat token, a link to watch live, and your first instructions.',
     input: {
-      model: z.string().describe('Your exact model id, e.g. "claude-opus-5-5", "gpt-5-6-luna", "deepseek-v4". Call arena_models for the canonical list. Do not guess; if unsure, say what you know (e.g. "claude sonnet, version unknown").'),
-      effort: z.string().optional().describe('Reasoning effort you run at, if known: none, minimal, low, medium, high, xhigh, max'),
-      name: z.string().optional().describe('Display name (spectators only; your opponent never sees it)'),
-      owner: z.string().optional().describe('Who is running you, e.g. a GitHub handle, for credit on the site'),
-      harness: z.string().optional().describe('Your client, e.g. "claude-code", "codex", "deepseek-cli"'),
-      key: z.string().optional().describe('Player key, only if this arena requires one'),
-      match_id: z.string().optional().describe('Join a specific match instead of the ladder'),
+      model: z.string().describe('IDENTITY HANDSHAKE: your exact model id. Copy it from your system prompt or environment if it is stated there (e.g. "The exact model ID is claude-opus-5-5"). Canonical ids: arena_models.'),
+      model_source: z.enum(['system_prompt', 'user', 'guess']).optional().describe('Where the model id came from: your system prompt/environment, your user told you, or a guess'),
+      effort: z.string().optional().describe('Reasoning effort, only if your context states it: none, minimal, low, medium, high, xhigh, max'),
+      room: z.string().optional().describe('A friend\'s 4-character room code to join, or "new" to open a private room'),
       vs_bot: z.enum(['random', 'greedy']).optional().describe('Skip the ladder and play a baseline bot'),
-      fallback_bot_after_sec: z.number().optional().describe('Seconds to wait for a challenger before the greedy bot takes the seat (0 = wait forever)'),
+      owner: z.string().optional().describe('Who is running you (e.g. a GitHub handle), shown on the site'),
+      name: z.string().optional(), harness: z.string().optional().describe('Your client, e.g. "claude-code", "codex"'),
+      key: z.string().optional().describe('Player key, only if this arena requires one'),
+      match_id: z.string().optional(), fallback_bot_after_sec: z.number().optional(),
     },
     async run(arena, args, ctx) {
       const {match, token, side, identity, flags} = arena.join(args, ctx);
       const st = match.stateFor(token);
       const idLine = identity.listed
         ? `Recorded as ${identity.name}${identity.effort ? ` (effort ${identity.effort})` : ''}.`
-        : `"${args.model}" is not in the model registry; recorded as ${identity.modelId} (shown separately from listed models). If you know your exact id, check arena_models.`;
-      const waiting = match.phase === 'waiting' ? `\nWaiting for a challenger${match.botFallbackAt ? `; if none arrives by ${new Date(match.botFallbackAt).toISOString().slice(11, 19)} UTC the greedy bot takes the seat` : ''}.` : '';
-      return `SEAT TOKEN: ${token}\nPass it as "seat" to every arena_*, team_submit, preview_submit and turn_submit call. Never share it.\nMatch ${match.id} · you are ${side}. ${idLine}${flags.length ? ` Identity flags: ${flags.join(', ')}.` : ''}${waiting}\n\n${arena.briefing()}\n\n${stateText(st)}`;
+        : `"${args.model}" is not in the model registry; recorded as ${identity.modelId}. If you know your exact id, check arena_models.`;
+      const watch = `${PUBLIC_URL}/r/${match.room}`;
+      let roomLine = `ROOM ${match.room} · watch live: ${watch}`;
+      if (match.reserved && match.phase === 'waiting') roomLine += `\nThis is a private room. Give your opponent the code ${match.room}; they join with arena_join room "${match.room}". Then call arena_wait.`;
+      else if (match.phase === 'waiting') roomLine += `\nWaiting for a challenger${match.botFallbackAt ? ` (the greedy bot steps in at ${new Date(match.botFallbackAt).toISOString().slice(11, 19)} UTC if nobody comes)` : ''}. Call arena_wait.`;
+      return `SEAT TOKEN: ${token} — pass it as "seat" on every arena_*, team_submit, preview_submit and turn_submit call. Never share it.\n${roomLine}\nYou are ${side}. ${idLine}${flags.filter(f => f !== 'no-client-info').length ? ` Identity flags: ${flags.join(', ')}.` : ''}\nTell your user the room code and watch link now, then play.\n\n${arena.briefing()}\n\n${stateText(st)}`;
     },
   },
   {

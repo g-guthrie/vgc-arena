@@ -22,9 +22,10 @@ function gameSeed(matchSeed, n) {
 }
 
 export class Match extends EventEmitter {
-  constructor({id, label, seed, bestOf = 3, fixedTeams, createdBy} = {}) {
+  constructor({id, room, label, seed, bestOf = 3, fixedTeams, createdBy} = {}) {
     super();
     this.id = id || `m-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
+    this.room = room || null; // short public code, assigned by the arena
     this.label = label || '';
     this.seed = seed || crypto.randomBytes(8).toString('hex');
     this.bestOf = bestOf;
@@ -382,7 +383,7 @@ export class Match extends EventEmitter {
     const side = this.sideOf(token);
     const seat = this.seats[side];
     const opp = this.seats[other(side)];
-    const base = {matchId: this.id, side, phase: this.phase, score: {you: this.score[side], opponent: opp ? this.score[other(side)] : 0}, game: this.game?.n || 0};
+    const base = {matchId: this.id, room: this.room, side, phase: this.phase, score: {you: this.score[side], opponent: opp ? this.score[other(side)] : 0}, game: this.game?.n || 0};
     if (this.phase === 'waiting') return {...base, yourTurn: false, text: 'Waiting for an opponent to join this match. Call arena_wait.'};
     if (this.phase === 'finished') {
       const result = this.winner === 'tie' ? 'The match was a TIE' : this.winner === side ? 'You WON the match' : 'You LOST the match';
@@ -440,18 +441,26 @@ export class Match extends EventEmitter {
     return L.join('\n');
   }
 
+  // Spectator protocol for one game with the real identities filled in
+  // (players only ever see "Player 1/2").
+  spectatorLines(n) {
+    const g = this.games[n - 1];
+    if (!g) return [];
+    return displayNames(g.game.linesFor('spectator'), this.seats);
+  }
+
   publicView({reveal = false} = {}) {
     const showTeams = SIDES.every(s => this.seats[s]?.team);
     const finished = this.phase === 'finished';
     return {
-      id: this.id, label: this.label, phase: this.phase, createdAt: this.createdAt, finishedAt: this.finishedAt,
+      id: this.id, room: this.room, label: this.label, phase: this.phase, createdAt: this.createdAt, finishedAt: this.finishedAt,
       format: FORMAT_ID, bestOf: this.bestOf, score: this.score, winner: this.winner, endReason: this.endReason,
       players: SIDES.map(s => this.seats[s] ? {side: s, name: this.seats[s].name, model: this.seats[s].model, modelName: this.seats[s].identity?.name, effort: this.seats[s].identity?.effort || null, provider: this.seats[s].identity?.provider, owner: this.seats[s].owner, harness: this.seats[s].harness, flags: this.seats[s].flags, teamSubmitted: !!this.seats[s].team} : null),
       sheets: showTeams ? {p1: this.seats.p1.sheet, p2: this.seats.p2.sheet} : null,
       games: this.games.map(g => ({
         n: g.n, winner: g.winner, turn: g.game.turn, endedAt: g.endedAt || null,
         log: describeLines(g.game.linesFor('spectator'), 'spectator'),
-        rawLog: g.game.spectatorLog(),
+        rawLog: this.spectatorLines(g.n).join('\n'),
       })),
       events: this.events.slice(-50),
       ...(finished || reveal ? {
@@ -469,7 +478,7 @@ export class Match extends EventEmitter {
       harnessVersion: HARNESS_VERSION,
       showdownCommit: SHOWDOWN_COMMIT,
       format: FORMAT_ID,
-      id: this.id, label: this.label, seed: this.seed, bestOf: this.bestOf,
+      id: this.id, room: this.room, label: this.label, seed: this.seed, bestOf: this.bestOf,
       createdAt: this.createdAt, finishedAt: this.finishedAt, createdBy: this.createdBy,
       fixedTeams: this.fixedTeams ? {source: this.fixedTeams.source || null} : null,
       winner: this.winner, endReason: this.endReason, score: this.score,
@@ -478,7 +487,7 @@ export class Match extends EventEmitter {
         client: this.seats[s].client, detectedHarness: this.seats[s].detectedHarness, flags: this.seats[s].flags, harness: this.seats[s].harness,
         teamText: this.seats[s].teamText, teamPlan: this.seats[s].teamPlan, teamHash: this.seats[s].teamHash, teamAttempts: this.seats[s].teamAttempts,
       }])),
-      games: this.games.map(g => ({n: g.n, seed: g.seed, winner: g.winner, turns: g.game.turn, startedAt: g.startedAt, endedAt: g.endedAt, preview: g.preview, spectatorLog: g.spectatorLog, omniscientLog: g.omniscientLog})),
+      games: this.games.map(g => ({n: g.n, seed: g.seed, winner: g.winner, turns: g.game.turn, startedAt: g.startedAt, endedAt: g.endedAt, preview: g.preview, spectatorLog: g.spectatorLog, displayLog: this.spectatorLines(g.n).join('\n'), omniscientLog: g.omniscientLog})),
       decisions: this.decisions,
       rejections: this.rejections,
       events: this.events,
@@ -489,6 +498,21 @@ export class Match extends EventEmitter {
 
 import {statRange} from './dex-tools.mjs';
 import {dex} from './showdown.mjs';
+export function displayName(seat) {
+  if (!seat) return '';
+  const id = seat.identity || {};
+  return `${id.name || seat.model}${id.effort ? ` (${id.effort})` : ''}`.replace(/\|/g, '/');
+}
+export function displayNames(lines, seats) {
+  const names = {p1: displayName(seats.p1), p2: displayName(seats.p2)};
+  return lines.map(l => {
+    if (l.startsWith('|player|')) return l.replace(/^\|player\|(p[12])\|Player [12]\|/, (m, side) => `|player|${side}|${names[side]}|`);
+    if (l === '|win|Player 1') return `|win|${names.p1}`;
+    if (l === '|win|Player 2') return `|win|${names.p2}`;
+    return l;
+  });
+}
+
 function megaForm(p) {
   const stone = p.item && dex.items.get(p.item);
   const name = stone?.megaStone?.[p.species.name] || stone?.megaStone?.[p.baseSpecies.name];

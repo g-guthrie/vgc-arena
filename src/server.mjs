@@ -36,18 +36,46 @@ function archivedView(art) {
     try { sheets[s] = openSheet(parseTeam(art.players[s].teamText)); } catch { sheets[s] = []; }
   }
   return {
-    id: art.id, label: art.label, phase: 'finished', createdAt: art.createdAt, finishedAt: art.finishedAt, format: art.format, bestOf: art.bestOf,
+    id: art.id, room: art.room || null, label: art.label, phase: 'finished', createdAt: art.createdAt, finishedAt: art.finishedAt, format: art.format, bestOf: art.bestOf,
     score: art.score, winner: art.winner, endReason: art.endReason, archived: true,
     players: ['p1', 'p2'].map(s => art.players[s] && {side: s, name: art.players[s].name, model: art.players[s].model, modelName: art.players[s].identity?.name,
       effort: art.players[s].identity?.effort || null, provider: art.players[s].identity?.provider, owner: art.players[s].owner, harness: art.players[s].harness, flags: art.players[s].flags, teamSubmitted: true}),
     sheets,
-    games: art.games.map(g => ({n: g.n, winner: g.winner, turn: g.turns, endedAt: g.endedAt, log: describeLines(String(g.spectatorLog || '').split('\n'), 'spectator')})),
+    games: art.games.map(g => ({n: g.n, winner: g.winner, turn: g.turns, endedAt: g.endedAt, log: describeLines(String(g.spectatorLog || '').split('\n'), 'spectator'), rawLog: g.displayLog || g.spectatorLog || ''})),
     teams: {p1: art.players.p1?.teamText, p2: art.players.p2?.teamText},
     teamPlans: {p1: art.players.p1?.teamPlan, p2: art.players.p2?.teamPlan},
     previews: art.games.map(g => ({n: g.n, ...g.preview})),
     decisions: art.decisions.map(({observation, ...d}) => d),
     events: art.events.slice(-50),
   };
+}
+
+// Server-sent events for spectators: public state plus new protocol lines.
+function streamMatch(m, req, res) {
+  res.writeHead(200, {'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'access-control-allow-origin': '*'});
+  const sent = {};
+  let pending = null;
+  const push = () => {
+    pending = null;
+    const view = m.publicView();
+    const lite = {...view, games: view.games.map(g => ({n: g.n, winner: g.winner, turn: g.turn, endedAt: g.endedAt}))};
+    res.write(`event: state\ndata: ${JSON.stringify(lite)}\n\n`);
+    for (const g of m.games) {
+      const lines = m.spectatorLines(g.n);
+      const from = sent[g.n] || 0;
+      if (lines.length > from) {
+        res.write(`event: lines\ndata: ${JSON.stringify({n: g.n, from, lines: lines.slice(from)})}\n\n`);
+        sent[g.n] = lines.length;
+      }
+    }
+    if (m.phase === 'finished') res.write('event: finished\ndata: {}\n\n');
+  };
+  const onChange = () => { pending ||= setTimeout(push, 150); };
+  const ping = setInterval(() => res.write(': ping\n\n'), 20000);
+  m.on('change', onChange);
+  m.on('finished', onChange);
+  req.on('close', () => { clearInterval(ping); clearTimeout(pending); m.off('change', onChange); m.off('finished', onChange); });
+  push();
 }
 
 export function createServer({arena = new Arena()} = {}) {
@@ -90,6 +118,12 @@ export function createServer({arena = new Arena()} = {}) {
         return;
       }
 
+      // Short share links: /r/K7QX
+      if (parts[0] === 'r' && parts[1]) {
+        res.writeHead(302, {location: `/#/room/${encodeURIComponent(parts[1].toUpperCase())}`});
+        return res.end();
+      }
+
       if (parts[0] === 'api') {
         const [, a, b, c] = parts;
         if (a === 'info') return send(res, 200, {harness: HARNESS_VERSION, format: FORMAT_ID, showdownCommit: SHOWDOWN_COMMIT, tools: TOOLS.map(t => t.name), models: listModels()});
@@ -105,6 +139,14 @@ export function createServer({arena = new Arena()} = {}) {
           if (b === 'pokemon') return send(res, 200, stats.pokemon({model: q.model}));
           if (b === 'model' && c) return send(res, 200, stats.model(decodeURIComponent(c)));
           return send(res, 404, {error: 'Unknown stats view'});
+        }
+        if (a === 'rooms' && b) {
+          const code = b.toUpperCase();
+          const live = arena.rooms.get(code);
+          if (live) return send(res, 200, {matchId: live.id, room: code, live: live.phase !== 'finished'});
+          const row = arena.db.get('select id from matches where room = ?', code);
+          if (row) return send(res, 200, {matchId: row.id, room: code, live: false});
+          return send(res, 404, {error: `No room ${code}`});
         }
         if (a === 'matches' && !b) {
           if (req.method === 'POST') {
@@ -128,6 +170,7 @@ export function createServer({arena = new Arena()} = {}) {
             if (!art) return send(res, 404, {error: 'No such match'});
             return send(res, 200, archivedView(art));
           }
+          if (c === 'stream') return streamMatch(m, req, res);
           if (c === 'bot' && req.method === 'POST') { const p = await body(req); arena.addBot(m.id, p.kind || 'greedy'); return send(res, 200, {ok: true}); }
           if (c === 'artifact') {
             if (m.phase !== 'finished') return send(res, 403, {error: 'Artifacts are available after the match finishes.'});

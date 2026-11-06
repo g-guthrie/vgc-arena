@@ -45,6 +45,9 @@ export class StatsDB {
     this.db = new DatabaseSync(this.file);
     this.db.exec('pragma journal_mode = wal;');
     this.db.exec(SCHEMA);
+    const cols = t => this.db.prepare(`pragma table_info(${t})`).all().map(c => c.name);
+    if (!cols('matches').includes('room')) this.db.exec('alter table matches add column room text');
+    if (!cols('seats').includes('model_source')) this.db.exec('alter table seats add column model_source text');
     this.version = 0;
   }
 
@@ -57,21 +60,24 @@ export class StatsDB {
     this.db.exec('begin');
     try {
       const rated = art.winner && art.endReason !== 'aborted' ? 1 : 0;
-      ins(`insert or replace into matches values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ins(`insert or replace into matches (id, label, created_at, finished_at, format, harness_version, showdown_commit, winner, end_reason,
+        score_p1, score_p2, ties, fixed_teams, rated, artifact_dir, room) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         art.id, art.label || '', art.createdAt, art.finishedAt, art.format, art.harnessVersion, art.showdownCommit,
-        art.winner, art.endReason, art.score.p1, art.score.p2, art.score.ties, match.fixedTeams ? 1 : 0, rated, artifactDir || '');
+        art.winner, art.endReason, art.score.p1, art.score.p2, art.score.ties, match.fixedTeams ? 1 : 0, rated, artifactDir || '', match.room || null);
       for (const side of ['p1', 'p2']) {
         const seat = match.seats[side];
         if (!seat) continue;
         const scores = art.decisions.filter(d => d.side === side).flatMap(d => (d.predictionScores || []).filter(x => x.actual !== null));
         const thinks = art.decisions.filter(d => d.side === side && d.thinkMs).map(d => d.thinkMs).sort((a, b) => a - b);
         const id = seat.identity || {};
-        ins(`insert or replace into seats values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        ins(`insert or replace into seats (match_id, side, name, owner, owner_verified, model_raw, model_id, model_name, provider, listed, effort,
+          harness, client_name, client_version, user_agent, detected_harness, flags, builder_model_id, team_text, team_plan, team_hash, team_attempts, rejections,
+          predictions, predictions_correct, brier_sum, median_think_ms, model_source) values (${Array(28).fill('?').join(',')})`,
           art.id, side, seat.name, seat.owner || '', seat.ownerVerified ? 1 : 0,
           id.raw || seat.model, seat.model, id.name || seat.model, id.provider || 'unknown', id.listed ? 1 : 0, id.effort || '',
           seat.harness || '', seat.client?.name || '', seat.client?.version || '', seat.client?.userAgent || '', seat.detectedHarness || '', JSON.stringify(seat.flags || []),
           match.fixedTeams?.builders?.[side] || seat.model, seat.teamText || '', seat.teamPlan || '', seat.teamHash || '', seat.teamAttempts || 0, (art.rejections?.[side] || []).length,
-          scores.length, scores.filter(x => x.correct).length, scores.reduce((a, x) => a + x.brier, 0), thinks.length ? thinks[Math.floor(thinks.length / 2)] : null);
+          scores.length, scores.filter(x => x.correct).length, scores.reduce((a, x) => a + x.brier, 0), thinks.length ? thinks[Math.floor(thinks.length / 2)] : null, id.source || '');
         for (const set of seat.team || []) {
           ins(`insert or replace into team_mons values (?,?,?,?,?,?,?,?)`, art.id, side, dex.species.get(set.species).name,
             set.item ? dex.items.get(set.item).name : '', dex.abilities.get(set.ability).name, set.nature || '',
