@@ -36,6 +36,7 @@ export class Match extends EventEmitter {
     this.games = [];
     this.score = {p1: 0, p2: 0, ties: 0};
     this.decisions = [];
+    this.rejections = {p1: [], p2: []};
     this.events = [];
     this.winner = null;
     this.finishedAt = null;
@@ -218,6 +219,13 @@ export class Match extends EventEmitter {
     if (this.currentGame && !this.currentGame.ended) this.currentGame.forfeit(side);
     this.finish(other(side), `${this.seats[side].name} forfeited`);
     return {ok: true};
+  }
+
+  noteRejection(token, tool, error) {
+    try {
+      const side = this.sideOf(token);
+      this.rejections[side].push({tool, error: String(error).slice(0, 300), game: this.game?.n || 0, turn: this.currentGame?.turn || 0, at: new Date().toISOString()});
+    } catch {}
   }
 
   recordDecision(side, rec) {
@@ -465,6 +473,7 @@ export class Match extends EventEmitter {
       }])),
       games: this.games.map(g => ({n: g.n, seed: g.seed, winner: g.winner, turns: g.game.turn, startedAt: g.startedAt, endedAt: g.endedAt, preview: g.preview, spectatorLog: g.spectatorLog, omniscientLog: g.omniscientLog})),
       decisions: this.decisions,
+      rejections: this.rejections,
       events: this.events,
       briefing: BRIEFING,
     };

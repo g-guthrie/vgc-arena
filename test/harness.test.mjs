@@ -133,3 +133,19 @@ Timid Nature
   assert.ok(/Illusion user/.test(obs));
   assert.ok(!/^DAMAGE/m.test(obs));
 });
+
+test('Fake Out guidance is right on turn 1 and after the first move', () => {
+  const {m, a, b} = setup();
+  m.submitTeam(a, {team: SUN, team_plan: 'Sun offense with Tailwind support.'});
+  m.submitTeam(b, {team: ROOM, team_plan: 'Trick Room with Hatterene and Sinistcha.'});
+  m.submitPreview(a, {bring: ['Incineroar', 'Whimsicott', 'Charizard', 'Garchomp'], game_plan: 'x', key_threats: 'x'});
+  m.submitPreview(b, {bring: ['Kingambit', 'Hatterene', 'Primarina', 'Sinistcha'], game_plan: 'x', key_threats: 'x'});
+  const t1 = m.stateFor(a).text;
+  assert.ok(!/will fail now/.test(t1), 'turn 1 must not call Fake Out dead');
+  const common = {reason: 'r', plan: 'on track', threats: 't', win_condition: 'w', risk: 'r', predictions: [{foe: 'foe1', action: 'Protect', confidence: 0.5}]};
+  assert.ok(!m.submitTurn(a, {...common, actions: [{slot: 1, move: 'Fake Out', target: 'foe1'}, {slot: 2, move: 'Protect'}]}).error);
+  m.stateFor(b);
+  assert.ok(!m.submitTurn(b, {...common, actions: [{slot: 1, move: 'Protect'}, {slot: 2, move: 'Protect'}]}).error);
+  const t2 = m.stateFor(a).text;
+  assert.match(t2, /Fake Out \/ First Impression only work on its first turn out/);
+});

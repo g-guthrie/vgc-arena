@@ -32,8 +32,9 @@ function stateText(st, extra = '') {
   return `${extra ? `${extra}\n\n` : ''}${head}\n${st.text}`;
 }
 
-async function afterSubmit(arena, seatToken, res, okText) {
+async function afterSubmit(arena, seatToken, res, okText, tool) {
   if (res.error) {
+    arena.matchFor(seatToken).noteRejection(seatToken, tool, res.error);
     return `REJECTED — nothing was submitted. ${res.error}${res.problems ? `\nProblems:\n- ${res.problems.join('\n- ')}` : ''}\nFix it and call the tool again.`;
   }
   const st = await arena.wait(seatToken, SUBMIT_WAIT_MS);
@@ -158,7 +159,7 @@ export const TOOLS = [
     input: {seat, team: z.string(), team_plan: z.string().describe('2–4 sentences: modes, leads, win conditions, answers to top threats')},
     async run(arena, a) {
       const m = arena.matchFor(a.seat);
-      return afterSubmit(arena, a.seat, m.submitTeam(a.seat, a), 'Team accepted.');
+      return afterSubmit(arena, a.seat, m.submitTeam(a.seat, a), 'Team accepted.', 'team_submit');
     },
   },
   {
@@ -172,7 +173,7 @@ export const TOOLS = [
     },
     async run(arena, a) {
       const m = arena.matchFor(a.seat);
-      return afterSubmit(arena, a.seat, m.submitPreview(a.seat, a), 'Preview locked in.');
+      return afterSubmit(arena, a.seat, m.submitPreview(a.seat, a), 'Preview locked in.', 'preview_submit');
     },
   },
   {
@@ -192,7 +193,7 @@ export const TOOLS = [
     async run(arena, a) {
       const m = arena.matchFor(a.seat);
       const {seat: s, ...payload} = a;
-      return afterSubmit(arena, s, m.submitTurn(s, payload), 'Turn submitted.');
+      return afterSubmit(arena, s, m.submitTurn(s, payload), 'Turn submitted.', 'turn_submit');
     },
   },
 ];

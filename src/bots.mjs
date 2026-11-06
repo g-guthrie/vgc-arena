@@ -27,7 +27,8 @@ function moveScore(game, side, slot, move) {
     let s = (data.basePower || 60) * Math.pow(2, dex.getEffectiveness(data.type, foe.getTypes()));
     if (me.getTypes().includes(data.type)) s *= 1.5;
     if (data.target === 'allAdjacentFoes') s *= 1.3;
-    if (data.id === 'fakeout' && me.activeTurns > 0) s = 0;
+    if (data.id === 'fakeout' && me.activeMoveActions > 0) s = 0;
+    if (data.id === 'fakeout' && me.activeMoveActions === 0) s *= 3;
     if (s > best.score) best = {score: s, target: `foe${i + 1}`};
   });
   return best;

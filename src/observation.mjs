@@ -43,7 +43,6 @@ function volatileText(p, mine) {
   return out;
 }
 
-function protectedTurnsMove(p) { return p.activeTurns; }
 
 function sideConditionsText(side) {
   const out = [];
@@ -397,7 +396,7 @@ export function renderObservation(game, sideId, ctx) {
     L.push(`      moves: ${p.moveSlots.map(m => `${m.move} ${m.pp}/${m.maxpp}pp${m.disabled ? ' (disabled)' : ''}`).join(' · ')}`);
     const vol = volatileText(p, true);
     if (vol.length) L.push(`      effects: ${vol.join('; ')}`);
-    if (p.activeTurns > 0 && p.moveSlots.some(m => m.id === 'fakeout' || m.id === 'firstimpression')) L.push('      note: Fake Out / First Impression only work on its first turn out — they will fail now.');
+    if (p.activeMoveActions > 0 && p.moveSlots.some(m => m.id === 'fakeout' || m.id === 'firstimpression')) L.push('      note: Fake Out / First Impression only work on its first turn out — they will fail now.');
   });
   const bench = me.pokemon.filter(p => !p.isActive);
   L.push(`YOUR BENCH: ${bench.length ? bench.map(p => p.fainted ? `${p.species.name} (fainted)` : `${p.species.name} ${pct((p.hp / p.maxhp) * 100)}${p.status ? ` ${STATUS_NAME[p.status]}` : ''} @ ${p.item ? dex.items.get(p.item).name : '(none)'}`).join(' · ') : 'none'}`);
@@ -423,7 +422,7 @@ export function renderObservation(game, sideId, ctx) {
     if (sheet) L.push(`      moves (sheet): ${sheet.moves.join(' · ')}`);
     const vol = volatileText(p, false);
     if (vol.length) L.push(`      effects: ${vol.join('; ')}`);
-    if (p.activeTurns === 0 && sheet?.moves?.some(m => toID(m) === 'fakeout')) L.push('      note: just came in — Fake Out is live for it this turn.');
+    if (p.activeMoveActions === 0 && sheet?.moves?.some(m => toID(m) === 'fakeout')) L.push('      note: has not moved since coming in — its Fake Out is live this turn.');
   });
   const seen = ctx.oppSeen;
   const oppBench = [...seen].filter(sp => !opp.active.some(p => p && !p.fainted && toID(speciesName(p)) === toID(sp)));

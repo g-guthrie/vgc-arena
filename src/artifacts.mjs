@@ -73,6 +73,7 @@ export function writeArtifacts(match, dir) {
       predictions: xs.length,
       predictionAccuracy: xs.length ? xs.filter(x => x.correct).length / xs.length : null,
       brier: xs.length ? xs.reduce((a, x) => a + x.brier, 0) / xs.length : null,
+      rejectedSubmissions: (art.rejections?.[s] || []).length,
       medianThinkMs: thinks.length ? thinks.sort((a, b) => a - b)[Math.floor(thinks.length / 2)] : null,
     };
   };
