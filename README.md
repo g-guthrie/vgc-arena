@@ -14,10 +14,10 @@ two Claude subagents, or a DeepSeek CLI against a built-in bot.
 ## Quick start
 
 ```sh
-npm install
+npm install          # Node 22.5 or newer (built-in SQLite)
 npm run setup        # clones + builds the pinned Pokemon Showdown simulator
 npm start            # http://127.0.0.1:3170  (spectator UI, /mcp, /api)
-npm test             # fairness tests
+npm test             # fairness, menu, teambuilding, clocks, predictions, speed inference, ratings
 npm run e2e          # bot vs bot full Bo3 in-process
 ```
 
@@ -32,8 +32,8 @@ The simplest way in: open the site's **Play** page, pick OpenAI or OpenRouter, p
   OPENROUTER_API_KEY=… VGC_ARENA_URL=https://arena.example node src/api-agent.mjs --provider openrouter --model anthropic/claude-sonnet-4.6 --room K7QX
   OPENAI_API_KEY=… node src/api-agent.mjs --provider openai --model gpt-5.5 --effort high --bot greedy
   ```
-- **How it answers.** Each decision offers the dex tools plus one answer tool whose schema lists exactly the legal answers, sent in strict mode so the provider can only decode a legal answer. A model or provider that can't take strict schemas falls back to the same schema unenforced, and the arena still checks every answer. An empty reply gets one reminder; no legal answer within 12 calls forfeits the match. That failure is the measurement, not something we paper over.
-- **Long matches.** Older decisions are dropped from the model's context; each observation restates what it needs.
+- **How it answers.** Each decision offers the dex tools plus one answer tool whose schema lists exactly the legal answers, sent in strict mode so the provider can only decode a legal answer. A model or provider that can't take strict schemas falls back to the same schema unenforced, and the arena still checks every answer. An empty reply gets one reminder; no legal answer within 12 calls forfeits the **game** (the set goes on, and the next game is a fresh decision). That failure is the measurement, not something we paper over.
+- **Long matches.** Older decisions are dropped from the model's context; each observation restates what it needs. This makes an API-driven seat play under different conditions from an MCP agent that keeps its whole set in context, so every seat records its connection path and the leaderboard can split rows by it (see [Results](#results)).
 
 ## Connecting players
 
@@ -83,6 +83,8 @@ On the ladder: Here is what happens next:
 
 Two agents can also share a `match_id`, or one can pass `"vs_bot": "greedy"`.
 
+**Clocks.** Every decision has a clock, shown in the state header ("7 min to answer"): 10 minutes per turn or team preview, 30 minutes for the whole of teambuilding. Running out of time loses the game in progress; a second timeout in the same match, or one during teambuilding, loses the match. A private room nobody joins within an hour is abandoned and never recorded. `arena_forfeit` takes `scope: "game"` to concede only the current game.
+
 ### Model identity
 
 Over MCP there is no way to prove which model is answering. The arena gets as close as it can.
@@ -92,6 +94,7 @@ Over MCP there is no way to prove which model is answering. The arena gets as cl
 Beyond the handshake:
 - **Canonical ids.** `models.json` is the registry (`arena_models` lists it). Aliases like "Opus 5.5" or "openai/gpt-5.5" are normalized, and `model:effort` is understood. Anything not registered is recorded as `unlisted:<name>` and kept off the main board.
 - **Effort is part of identity.** Rows can be split by model + reasoning effort.
+- **So is the connection path.** Each seat records whether it was driven over MCP, the hosted API agent, the CLI, raw HTTP, or as a built-in bot. Rows can be split by model + connection, since the paths give a model different amounts of memory.
 - **Cross-checks.** Each seat records the MCP client's own `clientInfo` (via the stdio bridge), the user-agent, and the declared harness. Contradictions become visible flags, e.g. `harness-provider-mismatch:codex/anthropic` when a Codex client claims to be Claude.
 - **Opponents are anonymous to each other.** The in-battle names are "Player 1/2", so models can't play to reputation.
 - **Owners.** `owner` is free text. Set `VGC_KEYS="key1=alice,key2=bob"` on a public deployment to require keys; those seats show a verified owner.
@@ -107,6 +110,7 @@ with different models:
 ```sh
 curl -s -X POST localhost:3170/api/matches -H 'content-type: application/json' \
   -d '{"label":"opus vs sonnet #1","reserved":true}'      # → {"id":"m-…"}
+# on an arena with VGC_ADMIN_KEY set, add: -H "authorization: Bearer $VGC_ADMIN_KEY"
 ```
 
 > Use the vgc-player agent twice in parallel, one with model opus and one with
@@ -158,7 +162,7 @@ Each field is 1–2 sentences. Predictions are scored against what the opponent 
 ## The site
 
 `npm start` serves it at `/`:
-- **Leaderboard:** filter by pilot or team builder, and by model or model + effort.
+- **Leaderboard:** filter by pilot or team builder, and by model, model + effort, or model + connection path.
 - **Head to head:** expected win probabilities from the ratings; hover a cell for the actual record.
 - **Pokémon:** usage, bring/lead rates, win rate when brought, top items and moves, filterable by the model that built the team.
 - **Rooms** (`/r/CODE`) are one living page that re-forms around the match. Every Pokémon card keeps its identity, so the browser morphs it between layouts as the match moves:
@@ -172,8 +176,19 @@ Each field is 1–2 sentences. Predictions are scored against what the opponent 
 - **Play:** copy-paste connection instructions and the model id list.
 
 `scripts/demo-data.mjs` fills a separate demo database for working on the UI, and `VGC_BOT_DELAY_MS=1500` slows bots down enough to watch them live.
-Set `VGC_PUBLIC_URL` to the public address so the watch links agents hand out are correct.
-For a public deployment, use `Dockerfile` with a volume at `/data`.
+
+### Running a public arena
+
+Use `Dockerfile` with a volume at `/data`, and set:
+- `VGC_PUBLIC_URL`: the public address, so the watch links agents hand out are correct.
+- `VGC_ADMIN_KEY`: an operator key. With it set, creating matches (`POST /api/matches`) and seating bots (`POST /api/matches/:id/bot`) need `Authorization: Bearer <key>`, so nobody can drop a bot into a stranger's waiting room. Unset, those routes are open (fine on a laptop).
+- `VGC_KEYS="key1=alice,key2=bob"` to require a player key on `arena_join`; those seats show a verified owner.
+- `VGC_DECISION_TIMEOUT_SEC` (default 600) and `VGC_TEAMBUILD_TIMEOUT_SEC` (default 1800): the decision clocks. 0 disables one.
+- `VGC_WAITING_TTL_SEC` (default 3600): how long an unjoined private room lives.
+- `VGC_RETAIN_FINISHED_SEC` (default 900): how long a finished match stays in memory before it is served from its artifact. Live matches are the only ones the process holds.
+- `VGC_SEALED_SPECTATING=1` to hide live research and picks from spectators (see above).
+
+The hosted "Play with an API key" route stays open to the public; it is bounded by `VGC_MAX_API_AGENTS` (default 12) and the per-match spending cap `VGC_API_MAX_USD` (default 3).
 
 ## Results
 
@@ -188,19 +203,25 @@ It also records the match in `artifacts/arena.db`.
 ```sh
 npm run ratings                          # Bradley–Terry per game, 90% bootstrap CI (resampling whole matches)
 node src/ratings.mjs --group effort      # split rows by reasoning effort
+node src/ratings.mjs --group path        # split rows by connection path (mcp, api, cli, http, builtin)
 node src/ratings.mjs --by builder        # credit the team's builder instead of its pilot
 ```
 
 The ratings table also reports prediction accuracy, Brier score and median
 decision time per model. Results are grouped by harness version and Showdown
-commit, because changing either changes the benchmark.
+commit, because changing either changes the benchmark. The harness version
+(`vgc-arena/11-<hash>`) is a hand-bumped number plus a hash of every source
+file that shapes what a player reads, so an edit to the briefing, the
+observation, the teambuilding questions or the damage facts changes it on its
+own.
 
 ### Separating teambuilding from piloting
 
 Replay finished teams with the pilots swapped:
 
 ```sh
-curl -s -X POST localhost:3170/api/matches -H 'content-type: application/json' -d '{
+curl -s -X POST localhost:3170/api/matches -H 'content-type: application/json' \
+  -H "authorization: Bearer $VGC_ADMIN_KEY" -d '{
   "label": "swap: sonnet pilots opus team",
   "fixed_teams": {"p1": "<export>", "p2": "<export>", "builders": {"p1": "claude-opus-5-5", "p2": "claude-sonnet-5-5"}}
 }'
@@ -216,8 +237,9 @@ src/dex-tools.mjs    teambuilding lookups, validation, open sheets, Champions st
 src/calc.mjs         simulator-backed damage/speed, RNG-sandboxed, spread-range aware
 src/game.mjs         one battle; protocol → readable text
 src/observation.mjs  per-player view, computed facts, the option menu (text, schema, parser)
-src/match.mjs        Bo3 state machine, scaffold validation, prediction scoring
-src/arena.mjs        match registry, pairing, waiting
+src/match.mjs        Bo3 state machine, scaffold validation, prediction scoring, decision clocks
+src/match-text.mjs   summaries, display names and grading helpers used by match.mjs
+src/arena.mjs        match registry, pairing, waiting, clocks, memory housekeeping
 src/tools.mjs        the tool catalog shared by MCP, HTTP and CLI
 src/server.mjs       HTTP + MCP (/mcp) + spectator UI
 src/mcp-stdio.mjs    stdio MCP bridge → server

@@ -132,12 +132,18 @@ export function createServer({arena = new Arena()} = {}) {
     res.writeHead(status, {'content-type': type, 'cache-control': 'no-store', 'access-control-allow-origin': '*'});
     res.end(type === 'application/json' ? JSON.stringify(data) : data);
   };
-  const loadArtifact = id => {
-    const row = arena.db.get('select artifact_dir from matches where id = ?', id);
-    if (!row?.artifact_dir) return null;
-    const file = path.join(row.artifact_dir, 'match.json');
-    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+  const loadArtifact = id => arena.artifactFor(id);
+  // Organizer routes (creating matches, seating bots) take an operator key
+  // when VGC_ADMIN_KEY is set, so nobody can drop a bot into a stranger's
+  // waiting room on a public arena. Unset (local use), they are open.
+  const ADMIN_KEY = process.env.VGC_ADMIN_KEY || '';
+  const isAdmin = req => {
+    if (!ADMIN_KEY) return true;
+    const auth = String(req.headers.authorization || '');
+    const given = auth.startsWith('Bearer ') ? auth.slice(7) : String(req.headers['x-vgc-admin'] || '');
+    return given.length > 0 && given === ADMIN_KEY;
   };
+  const requireAdmin = req => { if (!isAdmin(req)) throw Object.assign(new Error('This arena requires an operator key for that (Authorization: Bearer …).'), {status: 401}); };
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -197,6 +203,7 @@ export function createServer({arena = new Arena()} = {}) {
         }
         if (a === 'matches' && !b) {
           if (req.method === 'POST') {
+            requireAdmin(req);
             const p = await body(req);
             const fixed = p.fixed_teams ? {
               p1: p.fixed_teams.p1 === 'sample' ? sampleTeam(0) : p.fixed_teams.p1,
@@ -218,9 +225,10 @@ export function createServer({arena = new Arena()} = {}) {
             return send(res, 200, archivedView(art));
           }
           if (c === 'stream') return streamMatch(m, req, res);
-          if (c === 'bot' && req.method === 'POST') { const p = await body(req); arena.addBot(m.id, p.kind || 'greedy'); return send(res, 200, {ok: true}); }
+          if (c === 'bot' && req.method === 'POST') { requireAdmin(req); const p = await body(req); arena.addBot(m.id, p.kind || 'greedy'); return send(res, 200, {ok: true}); }
           if (c === 'artifact') {
             if (m.phase !== 'finished') return send(res, 403, {error: 'Artifacts are available after the match finishes.'});
+            if (m.abandoned) return send(res, 404, {error: 'That match was abandoned before it started.'});
             return send(res, 200, m.artifact());
           }
           return send(res, 200, m.publicView());
@@ -255,6 +263,7 @@ export function createServer({arena = new Arena()} = {}) {
     }
   });
   server.arena = arena;
+  server.on('close', () => arena.close());
   return server;
 }
 

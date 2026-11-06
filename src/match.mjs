@@ -3,17 +3,26 @@
 // view, and the artifact written after the match finishes.
 import crypto from 'node:crypto';
 import {EventEmitter} from 'node:events';
-import {toID, FORMAT_ID, SHOWDOWN_COMMIT} from './showdown.mjs';
+import {dex, toID, FORMAT_ID, SHOWDOWN_COMMIT} from './showdown.mjs';
 import {validateTeam, openSheet, openSheetText, exportTeam, parseTeam} from './dex-tools.mjs';
 import {Game, describeLines} from './game.mjs';
 import {renderObservation, choiceFromAnswer, predictionEnum} from './observation.mjs';
 import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION, thinkText} from './briefing.mjs';
-import {resolveModel} from './models.mjs';
+import {resolveModel, connectionPath} from './models.mjs';
 import {newDraft, setSlot, boardText, lockCheck, boardSummary} from './draft.mjs';
 import {question, questionText} from './guided.mjs';
 import {watchSpeedOrder, applySpeedConstraints} from './speed-infer.mjs';
+import {displayName, displayNames, sheetDex, teamName, opponentActions, rangesLine, chosenLabel, predictionHit} from './match-text.mjs';
 
 const RESEARCH_TOOLS = new Set(['search_pokemon', 'pokemon', 'search_moves', 'move', 'search_items', 'item', 'ability', 'calc']);
+
+// Decision clocks. A side that owes an answer for longer than this forfeits
+// the game; a second timeout in the same match (or one during teambuilding,
+// where there is no game to concede) forfeits the match. 0 disables a clock.
+export const CLOCK = {
+  decision: Number(process.env.VGC_DECISION_TIMEOUT_SEC ?? 600) * 1000,
+  teambuild: Number(process.env.VGC_TEAMBUILD_TIMEOUT_SEC ?? 1800) * 1000,
+};
 
 const MAX_FIELD = 700;
 // Strict events can hide live research and picks from spectators.
@@ -29,8 +38,13 @@ function gameSeed(matchSeed, n) {
 }
 
 export class Match extends EventEmitter {
-  constructor({id, room, label, seed, bestOf = 3, fixedTeams, createdBy} = {}) {
+  constructor({id, room, label, seed, bestOf = 3, fixedTeams, createdBy, clock} = {}) {
     super();
+    this.clock = {...CLOCK, ...(clock || {})};
+    // Per side: when the current decision was first owed, and which decision that was.
+    this.pendingSince = {p1: null, p2: null};
+    this.pendingKey = {p1: null, p2: null};
+    this.timeouts = {p1: 0, p2: 0};
     this.id = id || `m-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
     this.room = room || null; // short public code, assigned by the arena
     this.label = label || '';
@@ -72,6 +86,8 @@ export class Match extends EventEmitter {
     this.seats[side] = {
       token, side, name: String(name || identity?.name || side).slice(0, 40), model, identity,
       harness: String(harness || detectedHarness || '').slice(0, 80), client: client || {}, detectedHarness: detectedHarness || null,
+      // How this seat is driven (mcp, api, cli, http, builtin): the leaderboard can split on it.
+      path: connectionPath(harness || detectedHarness, client),
       owner: String(owner || '').slice(0, 60), ownerVerified: !!ownerVerified, flags: flags || [],
       joinedAt: new Date().toISOString(), waitingSince: Date.now(),
       team: null, teamText: null, teamPlan: null, sheet: null, teamAttempts: 0, draft: newDraft(),
@@ -112,6 +128,9 @@ export class Match extends EventEmitter {
   }
 
   // ------------------------------------------------------------ actions
+  // Free-form team import. Not exposed as a player tool: players build on the
+  // draft board (draftAnswer). This path serves the built-in bots, organizer
+  // fixed teams and tests.
   submitTeam(token, {team, team_plan}) {
     const side = this.sideOf(token);
     if (this.phase !== 'teambuilding') return {error: `Not in teambuilding (phase: ${this.phase}).`};
@@ -368,8 +387,15 @@ export class Match extends EventEmitter {
     return {ok: true};
   }
 
-  forfeit(token) {
+  // scope "match" concedes the set; "game" concedes only the game in progress
+  // (the set goes on), which is what a player that cannot produce a legal
+  // answer should lose.
+  forfeit(token, {scope = 'match'} = {}) {
     const side = this.sideOf(token);
+    return scope === 'game' ? this.forfeitGame(side) : this.forfeitSide(side);
+  }
+
+  forfeitSide(side, reason = 'forfeited') {
     if (this.phase === 'finished') return {error: 'Match already finished.'};
     if (this.currentGame && !this.currentGame.ended) this.currentGame.forfeit(side);
     // The game in progress (battle or preview) is a loss for the forfeiter, not a tie.
@@ -381,8 +407,79 @@ export class Match extends EventEmitter {
       this.score[other(side)]++;
     }
     this.forfeitedBy = side;
-    this.finish(other(side), `${this.seats[side].name} forfeited`);
+    this.forfeitReason = reason;
+    this.finish(other(side), `${this.seats[side].name} ${reason}`);
     return {ok: true};
+  }
+
+  forfeitGame(side, reason = 'forfeited the game') {
+    if (this.phase === 'finished') return {error: 'Match already finished.'};
+    const g = this.game;
+    // Before the first game there is nothing smaller than the match to concede.
+    if (!g || g.winner) return this.forfeitSide(side, reason.replace('the game', 'the match'));
+    if (!g.game.ended) g.game.forfeit(side);
+    g.forfeit = side;
+    this.log(`${this.seats[side].name} ${reason}`);
+    this.endGame();
+    this.emit('change');
+    return {ok: true};
+  }
+
+  // A match that never got going (a private room nobody joined): finished,
+  // unrated, unrecorded.
+  abandon(reason) {
+    if (this.phase === 'finished') return;
+    this.phase = 'finished';
+    this.abandoned = true;
+    this.winner = null;
+    this.endReason = reason;
+    this.finishedAt = new Date().toISOString();
+    this.log(`match abandoned: ${reason}`);
+    this.emit('abandoned');
+    this.emit('change');
+  }
+
+  // ------------------------------------------------------------ clocks
+  // The decision a side currently owes, as a key that changes with every new
+  // decision (a new turn is a new request object).
+  pendingKeyFor(side) {
+    if (this.phase === 'battle') return this.currentGame.request(side);
+    return `${this.phase}:${this.game?.n || 0}`;
+  }
+
+  // Start (or keep) the clock on whatever this side owes right now.
+  touchClock(side, now = Date.now()) {
+    if (this.phase === 'finished' || this.phase === 'waiting' || !this.yourTurn(side)) {
+      this.pendingSince[side] = null;
+      this.pendingKey[side] = null;
+      return;
+    }
+    const key = this.pendingKeyFor(side);
+    if (this.pendingKey[side] !== key) { this.pendingKey[side] = key; this.pendingSince[side] = now; }
+  }
+
+  clockLimit() { return this.phase === 'teambuilding' ? this.clock.teambuild : this.clock.decision; }
+
+  deadline(side) {
+    const since = this.pendingSince[side];
+    const limit = this.clockLimit();
+    return since != null && limit > 0 ? since + limit : null;
+  }
+
+  // Called about once a second by the arena. Forfeits whatever a side has
+  // left waiting for too long.
+  tick(now = Date.now()) {
+    if (this.phase === 'finished' || this.phase === 'waiting') return;
+    for (const s of SIDES) {
+      this.touchClock(s, now);
+      const due = this.deadline(s);
+      if (!due || now < due) continue;
+      this.timeouts[s]++;
+      const what = `ran out of time (${Math.round(this.clockLimit() / 60000)} min without an answer)`;
+      if (this.phase === 'teambuilding' || this.timeouts[s] >= 2) this.forfeitSide(s, what);
+      else this.forfeitGame(s, what);
+      if (this.phase === 'finished') return;
+    }
   }
 
   // What each player is doing with its tools, for the live "mind" panels.
@@ -461,12 +558,14 @@ export class Match extends EventEmitter {
     for (const d of byTurn) {
       const theirs = byTurn.find(x => x.side === other(d.side));
       if (!theirs || !Array.isArray(d.payload.predictions)) continue;
+      // Graded against what the opponent chose, not what the log shows: a
+      // flinch or a faint does not make a correct read wrong.
       d.predictionScores = d.payload.predictions.map(p => {
         const slot = p.foe === 'foe1' ? 1 : p.foe === 'foe2' ? 2 : 0;
         const actual = (theirs.payload.actions || []).find(a => Number(a.slot) === slot);
         if (!actual) return {foe: p.foe, predicted: p.action, actual: null};
-        const actualLabel = actual.switch ? 'switch' : actual.move;
-        const correct = toID(p.action) === toID(actualLabel) || (toID(p.action).startsWith('switch') && !!actual.switch);
+        const actualLabel = chosenLabel(actual);
+        const correct = predictionHit(p.action, actualLabel);
         const conf = Math.max(0, Math.min(1, Number(p.confidence) || 0));
         return {foe: p.foe, predicted: p.action, actual: actualLabel, correct, confidence: conf, brier: (conf - (correct ? 1 : 0)) ** 2};
       });
@@ -510,7 +609,6 @@ export class Match extends EventEmitter {
   }
 
   header(side) {
-    const opp = this.seats[other(side)];
     return `Game ${this.game.n} (best of ${this.bestOf}) · Set score you ${this.score[side]}–${this.score[other(side)]}`;
   }
 
@@ -533,21 +631,29 @@ export class Match extends EventEmitter {
     }
     const youMega = game.battle.log.some(l => l.startsWith(`|-mega|${side}`));
     if (youMega) alerts.push('You have already used your Mega Evolution this game.');
+    // Last turn's predictions, graded the same way the record is: against
+    // what the opponent chose. What the log shows is added when it differs.
     const predictionReview = [];
-    if (view.predictions) {
+    if (view.predictions && view.lastRecord) {
       const lines = game.linesFor('spectator', view.predLogStart, end);
+      const theirs = this.decisions.find(d => d.side === other(side) && d.game === g.n && d.turn === view.lastRecord.turn && d.kind === 'move');
       for (const p of view.predictions) {
         if (!p.species) continue;
         const pos = p.foe === 'foe1' ? 'a' : 'b';
-        const used = lines.map(l => new RegExp(`^\\|move\\|${other(side)}${pos}: [^|]*\\|([^|]*)`).exec(l)).find(Boolean);
+        const used = lines.map(l => new RegExp(`^\\|move\\|${other(side)}${pos}: [^|]*\\|([^|]*)`).exec(l)).find(Boolean)?.[1];
         const switched = lines.some(l => new RegExp(`^\\|switch\\|${other(side)}${pos}:`).test(l));
         const who = `${other(side)}${pos}:`;
         const cant = lines.map(l => (l.startsWith(`|cant|${who}`) ? l.split('|')[3] : null)).find(Boolean);
         const fainted = lines.some(l => l.startsWith(`|faint|${who}`));
-        const why = cant ? ({flinch: 'flinched', par: 'fully paralyzed', slp: 'asleep', frz: 'frozen', recharge: 'recharging'}[cant] || `could not move (${cant.replace(/^(move|ability): /, '')})`) : fainted ? 'fainted before moving' : 'did not visibly act';
-        const happened = used ? `used ${used[1]}` : switched ? 'switched out' : why;
-        const hit = used ? toID(used[1]) === toID(p.action) : switched && toID(p.action).startsWith('switch');
-        predictionReview.push(`${p.foe} ${p.species}: you predicted ${p.action} (${Math.round(p.confidence * 100)}%) → ${happened}${used || switched ? (hit ? ' ✓' : ' ✗') : ''}`);
+        const why = cant ? ({flinch: 'flinched', par: 'fully paralyzed', slp: 'asleep', frz: 'frozen', recharge: 'recharging'}[cant] || `could not move (${cant.replace(/^(move|ability): /, '')})`) : fainted ? 'fainted before moving' : null;
+        const chosen = chosenLabel((theirs?.payload.actions || []).find(a => Number(a.slot) === (p.foe === 'foe1' ? 1 : 2)));
+        let happened;
+        if (chosen) {
+          happened = `they chose ${chosen} ${predictionHit(p.action, chosen) ? '✓' : '✗'}`;
+          const note = used && chosen !== 'switch' && toID(used) !== toID(chosen) ? `used ${used} instead` : !used && !switched ? why : null;
+          if (note) happened += ` (${note})`;
+        } else happened = used ? `used ${used}` : switched ? 'switched out' : why || 'did not visibly act';
+        predictionReview.push(`${p.foe} ${p.species}: you predicted ${p.action} (${Math.round(p.confidence * 100)}%) → ${happened}`);
       }
     }
     const obs = renderObservation(game, side, {
@@ -573,14 +679,17 @@ export class Match extends EventEmitter {
     const base = {matchId: this.id, room: this.room, side, phase: this.phase, score: {you: this.score[side], opponent: opp ? this.score[other(side)] : 0}, game: this.game?.n || 0};
     if (this.phase === 'waiting') return {...base, yourTurn: false, text: 'Waiting for an opponent to join this match. Call arena_wait.'};
     if (this.phase === 'finished') {
+      if (this.abandoned) return {...base, yourTurn: false, finished: true, text: `MATCH ABANDONED (${this.endReason}). No games were played and nothing was recorded. You are done — no further actions.`};
       const result = this.winner === 'tie' ? 'The match was a TIE' : this.winner === side ? 'You WON the match' : 'You LOST the match';
       // Players are anonymous to each other, so a forfeit is told from this seat's side.
-      const why = this.forfeitedBy ? (this.forfeitedBy === side ? 'you forfeited' : 'your opponent forfeited') : this.endReason;
+      const why = this.forfeitedBy ? `${this.forfeitedBy === side ? 'you' : 'your opponent'} ${this.forfeitReason || 'forfeited'}` : this.endReason;
       return {...base, yourTurn: false, finished: true, text: `MATCH FINISHED. ${result} ${this.score[side]}–${this.score[other(side)]} (${why}). You are done — no further actions.\n\n${this.gameSummaries(side)}`};
     }
     if (!this.yourTurn(side)) return {...base, yourTurn: false, text: `Waiting for your opponent (phase: ${this.phase}${this.phase === 'battle' ? `, game ${this.game.n}, turn ${this.currentGame.turn}` : ''}). Call arena_wait.`};
     const g = this.game;
     if (g?.view) g.view[side].promptedAt ||= Date.now();
+    this.touchClock(side);
+    base.deadline = this.deadline(side);
     if (this.phase === 'teambuilding') {
       return {...base, yourTurn: true, kind: 'teambuilding', text: `${TEAMBUILD_TEXT}\n\nYour opponent is anonymous to you (and you to them). You will see their team sheet at team preview.\n\n${this.guidedText(token)}`};
     }
@@ -618,7 +727,7 @@ export class Match extends EventEmitter {
       const res = g.winner === 'tie' || !g.winner ? 'tie' : g.winner === side ? 'you won' : 'you lost';
       const log = g.game.linesFor('spectator');
       const oppSeen = [...new Set(log.filter(l => new RegExp(`^\\|(switch|drag)\\|${opp}[ab]:`).test(l)).map(l => teamName(l.split('|')[3].split(',')[0])))];
-      L.push(`  Game ${g.n}: ${res} on turn ${g.game.turn}${g.forfeit ? ` (${g.forfeit === side ? 'you' : 'they'} forfeited)` : ''}. They brought ${oppSeen.join(', ') || 'nothing seen'}, leading ${oppSeen.slice(0, 2).join(' + ')}. You brought ${g.preview[side]?.bring.join(', ')}.`);
+      L.push(`  Game ${g.n}: ${res} on turn ${g.game.turn}${g.forfeit ? ` (${g.forfeit === side ? 'you' : 'they'} forfeited)` : ''}. They brought ${oppSeen.join(', ') || 'nothing seen'}, leading ${oppSeen.slice(0, 2).join(' + ')}. You brought ${g.preview[side]?.bring.join(', ') || 'nothing (no team preview)'}.`);
       const acts = opponentActions(log, opp);
       if (acts.length) L.push('    Their actions by turn:', ...acts.map(([turn, list]) => `      T${turn}: ${list.join(' · ')}`));
     }
@@ -646,8 +755,9 @@ export class Match extends EventEmitter {
     return {
       id: this.id, room: this.room, label: this.label, phase: this.phase, createdAt: this.createdAt, finishedAt: this.finishedAt,
       format: FORMAT_ID, bestOf: this.bestOf, score: this.score, winner: this.winner, endReason: this.endReason,
-      players: SIDES.map(s => this.seats[s] ? {side: s, name: this.seats[s].name, model: this.seats[s].model, modelName: this.seats[s].identity?.name, effort: this.seats[s].identity?.effort || null, provider: this.seats[s].identity?.provider, owner: this.seats[s].owner, harness: this.seats[s].harness, flags: this.seats[s].flags, teamSubmitted: !!this.seats[s].team,
-        rejections: this.rejections[s].length, api: this.seats[s].api || null} : null),
+      players: SIDES.map(s => this.seats[s] ? {side: s, name: this.seats[s].name, model: this.seats[s].model, modelName: this.seats[s].identity?.name, effort: this.seats[s].identity?.effort || null, provider: this.seats[s].identity?.provider, owner: this.seats[s].owner, harness: this.seats[s].harness, path: this.seats[s].path, flags: this.seats[s].flags, teamSubmitted: !!this.seats[s].team,
+        rejections: this.rejections[s].length, timeouts: this.timeouts[s], deadline: this.deadline(s), api: this.seats[s].api || null} : null),
+      abandoned: !!this.abandoned,
       current: this.game ? {n: this.game.n, previewLocked: {p1: !!this.game.preview.p1, p2: !!this.game.preview.p2}, turn: this.game.game.turn} : null,
       sheets: showTeams ? {p1: this.seats.p1.sheet, p2: this.seats.p2.sheet} : null,
       games: this.games.map(g => ({
@@ -696,10 +806,10 @@ export class Match extends EventEmitter {
       winner: this.winner, endReason: this.endReason, score: this.score,
       players: Object.fromEntries(SIDES.map(s => [s, this.seats[s] && {
         name: this.seats[s].name, model: this.seats[s].model, identity: this.seats[s].identity, owner: this.seats[s].owner,
-        client: this.seats[s].client, detectedHarness: this.seats[s].detectedHarness, flags: this.seats[s].flags, harness: this.seats[s].harness, api: this.seats[s].api || null,
-        teamText: this.seats[s].teamText, teamPlan: this.seats[s].teamPlan, teamHash: this.seats[s].teamHash, teamAttempts: this.seats[s].teamAttempts,
+        client: this.seats[s].client, detectedHarness: this.seats[s].detectedHarness, flags: this.seats[s].flags, harness: this.seats[s].harness, path: this.seats[s].path, api: this.seats[s].api || null,
+        teamText: this.seats[s].teamText, teamPlan: this.seats[s].teamPlan, teamHash: this.seats[s].teamHash, teamAttempts: this.seats[s].teamAttempts, timeouts: this.timeouts[s],
       }])),
-      games: this.games.map(g => ({n: g.n, seed: g.seed, winner: g.winner, turns: g.game.turn, startedAt: g.startedAt, endedAt: g.endedAt, preview: g.preview, spectatorLog: g.spectatorLog, displayLog: this.spectatorLines(g.n).join('\n'), omniscientLog: g.omniscientLog})),
+      games: this.games.map(g => ({n: g.n, seed: g.seed, winner: g.winner, forfeit: g.forfeit || null, turns: g.game.turn, startedAt: g.startedAt, endedAt: g.endedAt, preview: g.preview, spectatorLog: g.spectatorLog, displayLog: this.spectatorLines(g.n).join('\n'), omniscientLog: g.omniscientLog})),
       decisions: this.decisions,
       rejections: this.rejections,
       events: this.events,
@@ -708,64 +818,4 @@ export class Match extends EventEmitter {
   }
 }
 
-import {statRange} from './dex-tools.mjs';
-import {dex} from './showdown.mjs';
-export function displayName(seat) {
-  if (!seat) return '';
-  const id = seat.identity || {};
-  return `${id.name || seat.model}${id.effort ? ` (${id.effort})` : ''}`.replace(/\|/g, '/');
-}
-export function displayNames(lines, seats) {
-  const names = {p1: displayName(seats.p1), p2: displayName(seats.p2)};
-  return lines.map(l => {
-    if (l.startsWith('|player|')) return l.replace(/^\|player\|(p[12])\|Player [12]\|/, (m, side) => `|player|${side}|${names[side]}|`);
-    if (l === '|win|Player 1') return `|win|${names.p1}`;
-    if (l === '|win|Player 2') return `|win|${names.p2}`;
-    return l;
-  });
-}
-
-function sheetDex(sheet) {
-  const species = {}, moves = {};
-  for (const p of sheet) {
-    const sp = dex.species.get(p.species);
-    species[p.species] = {types: sp.types, bs: sp.baseStats, mega: (sp.otherFormes || []).map(f => dex.species.get(f)).filter(f => f.isMega).map(f => f.name)};
-    for (const m of p.moves) { const mv = dex.moves.get(m); moves[mv.name] = {type: mv.type, category: mv.category, bp: mv.basePower || 0}; }
-  }
-  return {species, moves};
-}
-
-// The opponent's visible actions per turn of a finished game: moves with
-// targets, switches and Mega Evolution, from the public log.
-// The name a Pokémon has on its team sheet: Mega and other in-battle forms
-// count as the Pokémon they came from.
-function teamName(name) {
-  const sp = dex.species.get(name);
-  if (sp.isMega) return sp.baseSpecies;
-  return sp.battleOnly ? (Array.isArray(sp.battleOnly) ? sp.battleOnly[0] : sp.battleOnly) : sp.name;
-}
-
-function opponentActions(log, opp) {
-  const out = [];
-  let turn = 0;
-  let acts = [];
-  const name = ident => ident.split(': ')[1];
-  const flush = () => { if (turn && acts.length) out.push([turn, acts]); acts = []; };
-  for (const line of log) {
-    const p = line.split('|');
-    if (p[1] === 'turn') { flush(); turn = Number(p[2]); continue; }
-    if (!turn || !p[2]?.startsWith(opp)) continue;
-    if (p[1] === 'move' && !/\[from\](?! lockedmove)/.test(line)) acts.push(`${name(p[2])} ${p[3]}${p[4] && !p[4].startsWith(opp) ? ` → ${name(p[4])}` : p[4] && p[4] !== p[2] ? ` → its ally ${name(p[4])}` : ''}`);
-    else if (p[1] === 'switch' || p[1] === 'drag') acts.push(`in: ${p[3].split(',')[0]}`);
-    else if (p[1] === '-mega') acts.push(`${name(p[2])} Mega Evolved`);
-  }
-  flush();
-  return out;
-}
-
-function rangesLine(species) {
-  const sp = dex.species.get(species);
-  return ['hp', 'atk', 'def', 'spa', 'spd', 'spe'].map(s => `${s === 'hp' ? 'HP' : s[0].toUpperCase() + s.slice(1)} ${statRange(sp, s).join('–')}`).join(' · ');
-}
-
-export {SIDES, other, parseTeam};
+export {SIDES, other, parseTeam, displayName, displayNames};

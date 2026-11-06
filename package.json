@@ -18,7 +18,7 @@
     "agent": "node src/api-agent.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.5"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

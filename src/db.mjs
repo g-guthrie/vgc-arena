@@ -48,6 +48,8 @@ export class StatsDB {
     const cols = t => this.db.prepare(`pragma table_info(${t})`).all().map(c => c.name);
     if (!cols('matches').includes('room')) this.db.exec('alter table matches add column room text');
     if (!cols('seats').includes('model_source')) this.db.exec('alter table seats add column model_source text');
+    if (!cols('seats').includes('path')) this.db.exec('alter table seats add column path text');
+    if (!cols('seats').includes('timeouts')) this.db.exec('alter table seats add column timeouts int');
     this.version = 0;
   }
 
@@ -72,12 +74,13 @@ export class StatsDB {
         const id = seat.identity || {};
         ins(`insert or replace into seats (match_id, side, name, owner, owner_verified, model_raw, model_id, model_name, provider, listed, effort,
           harness, client_name, client_version, user_agent, detected_harness, flags, builder_model_id, team_text, team_plan, team_hash, team_attempts, rejections,
-          predictions, predictions_correct, brier_sum, median_think_ms, model_source) values (${Array(28).fill('?').join(',')})`,
+          predictions, predictions_correct, brier_sum, median_think_ms, model_source, path, timeouts) values (${Array(30).fill('?').join(',')})`,
           art.id, side, seat.name, seat.owner || '', seat.ownerVerified ? 1 : 0,
           id.raw || seat.model, seat.model, id.name || seat.model, id.provider || 'unknown', id.listed ? 1 : 0, id.effort || '',
           seat.harness || '', seat.client?.name || '', seat.client?.version || '', seat.client?.userAgent || '', seat.detectedHarness || '', JSON.stringify(seat.flags || []),
           match.fixedTeams?.builders?.[side] || seat.model, seat.teamText || '', seat.teamPlan || '', seat.teamHash || '', seat.teamAttempts || 0, (art.rejections?.[side] || []).length,
-          scores.length, scores.filter(x => x.correct).length, scores.reduce((a, x) => a + x.brier, 0), thinks.length ? thinks[Math.floor(thinks.length / 2)] : null, id.source || '');
+          scores.length, scores.filter(x => x.correct).length, scores.reduce((a, x) => a + x.brier, 0), thinks.length ? thinks[Math.floor(thinks.length / 2)] : null, id.source || '',
+          seat.path || '', match.timeouts?.[side] || 0);
         for (const set of seat.team || []) {
           ins(`insert or replace into team_mons values (?,?,?,?,?,?,?,?)`, art.id, side, dex.species.get(set.species).name,
             set.item ? dex.items.get(set.item).name : '', dex.abilities.get(set.ability).name, set.nature || '',

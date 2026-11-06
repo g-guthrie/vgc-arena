@@ -46,6 +46,19 @@ export function detectHarness(clientName, userAgent) {
   return null;
 }
 
+// How a seat is driven. Agents on different paths play under different
+// conditions (an MCP agent keeps its whole set in context; the hosted API
+// agent sees mostly the current decision), so the leaderboard can split on it.
+export function connectionPath(harness, client = {}) {
+  const h = String(harness || '').toLowerCase();
+  const via = String(client.via || '').toLowerCase();
+  if (h === 'builtin') return 'builtin';
+  if (h.startsWith('api:') || via === 'arena-api' || via === 'api-agent') return 'api';
+  if (via === 'mcp-stdio' || via === 'mcp-http' || h.startsWith('mcp')) return 'mcp';
+  if (via === 'cli') return 'cli';
+  return 'http';
+}
+
 export function identityFlags(identity, client = {}) {
   const flags = [];
   if (!identity.listed) flags.push('unlisted-model');

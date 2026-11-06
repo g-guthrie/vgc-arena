@@ -40,7 +40,7 @@ function filtersBar(withGroup = true) {
   const seg = (key, opts) => `<span class="seg">${opts.map(([v, l]) => `<button data-k="${key}" data-v="${v}" class="${String(state[key]) === v ? 'on' : ''}">${l}</button>`).join('')}</span>`;
   return `<div class="filters">
     <label>Credit ${seg('by', [['pilot', 'Pilot'], ['builder', 'Team builder']])}</label>
-    ${withGroup ? `<label>Rows ${seg('group', [['model', 'Model'], ['effort', 'Model + effort']])}</label>` : ''}
+    ${withGroup ? `<label>Rows ${seg('group', [['model', 'Model'], ['effort', 'Model + effort'], ['path', 'Model + connection']])}</label>` : ''}
     <label><input type="checkbox" id="unl" ${state.unlisted ? 'checked' : ''}> include unlisted models</label>
   </div>`;
 }
@@ -62,10 +62,10 @@ function eloChart(rows) {
   rows.forEach((r, i) => {
     const y = i * rowH + 16;
     const c = pcolor(r.provider);
-    const t = `<b>${esc(r.name)}</b>${r.effort && r.effort !== 'default' ? ` · ${esc(r.effort)}` : ''}<br>Elo ${r.rating.toFixed(0)}${r.lo != null ? ` (90% ${r.lo.toFixed(0)}–${r.hi.toFixed(0)})` : ''}<br>${r.w}-${r.l}${r.t ? `-${r.t}` : ''} in ${r.games} games · ${r.matches} matches`;
+    const t = `<b>${esc(r.name)}</b>${r.split && r.split !== 'default' ? ` · ${esc(r.split)}` : ''}<br>Elo ${r.rating.toFixed(0)}${r.lo != null ? ` (90% ${r.lo.toFixed(0)}–${r.hi.toFixed(0)})` : ''}<br>${r.w}-${r.l}${r.t ? `-${r.t}` : ''} in ${r.games} games · ${r.matches} matches`;
     g += `<g data-tip="${esc(t)}" style="cursor:default">
       <rect x="0" y="${y - 13}" width="${W}" height="${rowH}" fill="transparent"/>
-      <text x="${L - 10}" y="${y + 4}" text-anchor="end" style="fill:var(--text-primary)">${esc(r.name)}${r.effort && r.effort !== 'default' ? ` · ${esc(r.effort)}` : ''}</text>
+      <text x="${L - 10}" y="${y + 4}" text-anchor="end" style="fill:var(--text-primary)">${esc(r.name)}${r.split && r.split !== 'default' ? ` · ${esc(r.split)}` : ''}</text>
       ${r.lo != null ? `<line x1="${x(r.lo)}" x2="${x(r.hi)}" y1="${y}" y2="${y}" stroke="${c}" stroke-width="2" stroke-linecap="round"/>` : ''}
       <circle cx="${x(r.rating)}" cy="${y}" r="5.5" fill="${c}" stroke="var(--surface-1)" stroke-width="2"/>
       <text x="${W - R + 10}" y="${y + 4}" style="fill:var(--text-primary);font-variant-numeric:tabular-nums">${r.rating.toFixed(0)}</text>
@@ -96,7 +96,7 @@ async function viewLeaderboard() {
     <div class="card table-wrap"><table>
       <thead><tr><th>#</th><th>Model</th><th class="num">Elo</th><th class="num">90% CI</th><th class="num">Games</th><th class="num">W–L</th><th class="num">Win %</th><th class="num">Prediction acc.</th><th class="num">Brier</th><th class="num">Median think</th><th class="num">Rejected / match</th></tr></thead>
       <tbody>${lb.rows.map((r, i) => `<tr>
-        <td class="muted">${i + 1}</td><td>${modelLink(r.model, r.name, r.provider, r.effort)}${r.listed ? '' : ' <span class="chip flag">unlisted</span>'}</td>
+        <td class="muted">${i + 1}</td><td>${modelLink(r.model, r.name, r.provider, r.split)}${r.listed ? '' : ' <span class="chip flag">unlisted</span>'}</td>
         <td class="num"><b>${r.rating.toFixed(0)}</b></td><td class="num muted">${r.lo != null ? `${r.lo.toFixed(0)}–${r.hi.toFixed(0)}` : '—'}</td>
         <td class="num">${r.games}</td><td class="num">${r.w}–${r.l}${r.t ? `–${r.t}` : ''}</td><td class="num">${pct(r.games ? r.w / r.games : null)}</td>
         <td class="num">${r.provider === 'arena' ? '—' : pct(r.predictionAccuracy)}</td><td class="num">${r.provider === 'arena' || r.brier == null ? '—' : r.brier.toFixed(3)}</td>
@@ -122,8 +122,8 @@ async function viewH2H() {
     <p class="sub">Each cell is the chance the <b>row</b> model beats the <b>column</b> model in a game, from the fitted ratings. Hover a cell for the games actually played.</p>
     ${filtersBar()}
     ${ms.length < 2 ? '<div class="empty">Needs at least two rated models.</div>' : `<div class="card table-wrap"><table class="matrix">
-      <thead><tr><th></th>${ms.map(m => `<th class="colh">${esc(m.name)}${m.effort && m.effort !== 'default' ? ` · ${esc(m.effort)}` : ''}</th>`).join('')}</tr></thead>
-      <tbody>${ms.map((a, i) => `<tr><th class="rowh"><span class="dot" style="background:${pcolor(a.provider)}"></span>${esc(a.name)}${a.effort && a.effort !== 'default' ? ` · ${esc(a.effort)}` : ''}</th>${h.cells[i].map((c, j) => c ? `<td style="background:${divColor(c.expected)};color:var(--text-primary)" data-tip="${esc(`<b>${a.name}</b> vs <b>${ms[j].name}</b><br>expected ${pct(c.expected)}<br>played: ${c.w}–${c.l}${c.t ? `–${c.t}` : ''}`)}">${pct(c.expected)}</td>` : '<td style="background:var(--surface-2)"></td>').join('')}</tr>`).join('')}</tbody>
+      <thead><tr><th></th>${ms.map(m => `<th class="colh">${esc(m.name)}${m.split && m.split !== 'default' ? ` · ${esc(m.split)}` : ''}</th>`).join('')}</tr></thead>
+      <tbody>${ms.map((a, i) => `<tr><th class="rowh"><span class="dot" style="background:${pcolor(a.provider)}"></span>${esc(a.name)}${a.split && a.split !== 'default' ? ` · ${esc(a.split)}` : ''}</th>${h.cells[i].map((c, j) => c ? `<td style="background:${divColor(c.expected)};color:var(--text-primary)" data-tip="${esc(`<b>${a.name}</b> vs <b>${ms[j].name}</b><br>expected ${pct(c.expected)}<br>played: ${c.w}–${c.l}${c.t ? `–${c.t}` : ''}`)}">${pct(c.expected)}</td>` : '<td style="background:var(--surface-2)"></td>').join('')}</tr>`).join('')}</tbody>
     </table>
     <div class="small muted" style="margin-top:8px"><span class="dot" style="background:var(--div-pos)"></span>row favored · <span class="dot" style="background:var(--div-mid)"></span>even · <span class="dot" style="background:var(--div-neg)"></span>column favored</div></div>`}`;
   bindFilters(viewH2H);
@@ -273,7 +273,7 @@ async function viewHome() {
     <div class="livegrid">${d.live.map(liveCard).join('') || '<div class="empty card">Nothing live. Tell an agent “play the VGC Arena ladder” and it will show up here.</div>'}</div>
     <div class="two" style="margin-top:20px">
       <div class="card"><h3 style="margin-top:0">Top of the ladder <a class="small" href="#/leaderboard" style="float:right">full board →</a></h3>
-        <table><tbody>${lb.rows.slice(0, 6).map((r, i) => `<tr><td class="muted">${i + 1}</td><td>${modelLink(r.model, r.name, r.provider, r.effort)}</td><td class="num"><b>${r.rating.toFixed(0)}</b></td><td class="num muted small">${r.w}–${r.l}</td></tr>`).join('') || '<tr><td class="muted">No rated games yet.</td></tr>'}</tbody></table></div>
+        <table><tbody>${lb.rows.slice(0, 6).map((r, i) => `<tr><td class="muted">${i + 1}</td><td>${modelLink(r.model, r.name, r.provider, r.split)}</td><td class="num"><b>${r.rating.toFixed(0)}</b></td><td class="num muted small">${r.w}–${r.l}</td></tr>`).join('') || '<tr><td class="muted">No rated games yet.</td></tr>'}</tbody></table></div>
       <div class="card"><h3 style="margin-top:0">Latest results <a class="small" href="#/matches" style="float:right">all →</a></h3>
         <table><tbody>${d.finished.slice(0, 6).map(m => `<tr class="rowlink" data-href="${roomHref(m)}"><td><code>${esc(m.room || '')}</code></td><td>${m.winner === 'p1' ? '<b>' : ''}${esc(m.p1.name)}${m.winner === 'p1' ? '</b>' : ''} <span class="muted">vs</span> ${m.winner === 'p2' ? '<b>' : ''}${esc(m.p2.name)}${m.winner === 'p2' ? '</b>' : ''}</td><td class="num">${m.score.p1}–${m.score.p2}</td></tr>`).join('') || '<tr><td class="muted">None yet.</td></tr>'}</tbody></table></div>
     </div>`;
