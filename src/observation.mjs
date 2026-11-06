@@ -10,6 +10,7 @@ import {describeLines} from './game.mjs';
 const STAT_SHORT = {atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe', accuracy: 'Acc', evasion: 'Eva'};
 const STATUS_NAME = {brn: 'burned', par: 'paralyzed', slp: 'asleep', frz: 'frozen', psn: 'poisoned', tox: 'badly poisoned'};
 const HIDDEN_VOLATILES = new Set(['stall']);
+const COUNTED = new Set(['encore', 'taunt', 'disable', 'throatchop', 'healblock', 'yawn', 'magnetrise', 'embargo', 'laserfocus', 'telekinesis']);
 const FIELD_NAMES = {trickroom: 'Trick Room (slower Pokémon move first within a priority bracket)', gravity: 'Gravity', wonderroom: 'Wonder Room', magicroom: 'Magic Room', fairylock: 'Fairy Lock'};
 const TARGETED = new Set(['normal', 'any', 'adjacentFoe', 'adjacentAlly', 'adjacentAllyOrSelf']);
 
@@ -50,7 +51,9 @@ function volatileText(p, mine) {
     if (id === 'encore' && state.move) extra = ` → ${dex.moves.get(state.move).name}`;
     if (id === 'perishsong' && state.duration) extra = ` (${state.duration - 1} turns to faint)`;
     if (id === 'disable' && state.move) extra = ` → ${dex.moves.get(state.move).name}`;
-    if (id === 'confusion' && mine) extra = '';
+    // Fixed-length effects: a player can count their turns, so show them.
+    // Random lengths (confusion, Outrage, binding) stay hidden.
+    if (COUNTED.has(id) && state.duration) extra += ` (${turnsLeft(state.duration)})`;
     out.push(`${name}${extra}`);
   }
   if (p.volatiles.stall) {
