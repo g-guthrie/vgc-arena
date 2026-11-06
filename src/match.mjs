@@ -11,6 +11,8 @@ import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION} from './briefing.mjs';
 import {resolveModel} from './models.mjs';
 
 const MAX_FIELD = 700;
+// Strict events can hide live research and picks from spectators.
+const SEALED = process.env.VGC_SEALED_SPECTATING === '1';
 const SIDES = ['p1', 'p2'];
 const other = s => (s === 'p1' ? 'p2' : 'p1');
 const clip = v => (typeof v === 'string' && v.length > MAX_FIELD ? `${v.slice(0, MAX_FIELD)}…` : v);
@@ -235,7 +237,7 @@ export class Match extends EventEmitter {
     let side;
     try { side = this.sideOf(token); } catch { return; }
     const {seat, ...a} = args || {};
-    const mon = t => String(t || '').split('\n')[0].split('@')[0].replace(/\(.*?\)/g, '').trim();
+    const mon = t => { const l = String(t || '').trim().split('\n')[0].split('@')[0].trim(); const m = /\(([^)]+)\)/.exec(l); return (m && !/^[MF]$/.test(m[1]) ? m[1] : l.replace(/\(.*?\)/g, '')).trim(); };
     const act = x => (x.switch ? `↻ ${x.switch}` : `${x.move}${x.target ? `→${x.target}` : ''}${x.mega ? ' ✦' : ''}`);
     const detail = {
       pokemon: () => a.name, move: () => a.name, item: () => a.name, ability: () => a.name,
@@ -246,7 +248,14 @@ export class Match extends EventEmitter {
       team_submit: () => 'locks the team', preview_submit: () => (a.bring || []).join(' · '),
       turn_submit: () => (a.actions || []).map(act).join(' · '), arena_forfeit: () => 'forfeits',
     }[tool]?.() || '';
-    this.activity.push({side, tool, ok, detail, t: Date.now(), game: this.game?.n || 0, turn: this.currentGame?.turn || 0});
+    // Pokémon this call was about, so the page can grow candidate cards.
+    const teamSpecies = t => String(t || '').split(/\n\s*\n/).map(b => mon(b)).filter(Boolean).map(x => (/\((.+)\)/.exec(x) ? /\((.+)\)/.exec(x)[1] : x));
+    const speciesOf = {
+      pokemon: () => [a.name], calc: () => [mon(a.attacker), mon(a.defender)],
+      validate_team: () => teamSpecies(a.team), team_submit: () => teamSpecies(a.team),
+    }[tool]?.() || [];
+    const species = speciesOf.map(x => { const sp = dex.species.get(x); return sp.exists ? sp.name : null; }).filter(Boolean);
+    this.activity.push({side, tool, ok, detail, species, draft: tool === 'validate_team' || tool === 'team_submit', t: Date.now(), game: this.game?.n || 0, turn: this.currentGame?.turn || 0});
     if (this.activity.length > 400) this.activity.splice(0, 100);
     this.emit('change');
   }
@@ -494,7 +503,19 @@ export class Match extends EventEmitter {
       events: this.events.slice(-50),
       thinking: {p1: this.since.p1, p2: this.since.p2, now: Date.now()},
       // Live research is shown as activity only; the details unlock at the end.
-      activity: this.activity.slice(-80).map(a => (finished || reveal ? a : {...a, detail: null})),
+      activity: this.activity.slice(-120).map(a => (finished || reveal || !SEALED ? a : {...a, detail: null, species: []})),
+      // Each side's latest draft and the Pokémon it has been looking at.
+      research: Object.fromEntries(SIDES.map(sd => {
+        if (SEALED && !finished && !reveal) return [sd, null];
+        const acts = this.activity.filter(a => a.side === sd);
+        const last = [...acts].reverse().find(a => a.draft && a.species?.length);
+        const seen = [];
+        for (const a of acts) for (const sp of a.species || []) if (!seen.includes(sp)) seen.push(sp);
+        const draft = (last?.species || []).slice(0, 6);
+        return [sd, {draft, draftOk: last ? last.ok : null, draftTool: last?.tool || null, cands: seen.filter(x => !draft.includes(x)).slice(-14), calls: acts.length}];
+      })),
+      // Each game's chosen four, once that game's battle has started.
+      brings: this.games.map(g => (g.preview.p1 && g.preview.p2 && (finished || reveal || !SEALED) ? {n: g.n, p1: g.preview.p1.bring, p2: g.preview.p2.bring} : {n: g.n})),
       dex: showTeams ? sheetDex([...this.seats.p1.sheet, ...this.seats.p2.sheet]) : null,
       ...(finished || reveal ? {
         teams: showTeams ? {p1: this.seats.p1.teamText, p2: this.seats.p2.teamText} : null,

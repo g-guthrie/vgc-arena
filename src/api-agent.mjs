@@ -19,8 +19,10 @@ export const PROVIDERS = {
 // The model never handles its seat token or the lobby; the loop does.
 const HIDDEN = new Set(['arena_join', 'arena_wait', 'arena_state', 'arena_forfeit', 'arena_models', 'match_transcript']);
 const SUBMITS = new Set(['team_submit', 'preview_submit', 'turn_submit']);
-const LIMITS = {teambuilding: 30, preview: 6, move: 6, switch: 4};
-const KEEP_RECENT = 14; // messages kept verbatim; older tool output is summarized away
+const LIMITS = {teambuilding: 40, preview: 6, move: 6, switch: 4};
+const SUBMIT_FOR = {teambuilding: 'team_submit', preview: 'preview_submit', move: 'turn_submit', switch: 'turn_submit'};
+const KEEP_PRIOR = 4;     // messages kept from before the current decision
+const KEEP_TOOLS = 6;     // recent tool results kept whole within the current decision
 
 function toolSchemas() {
   return TOOLS.filter(t => !HIDDEN.has(t.name)).map(t => {
@@ -59,8 +61,12 @@ export class ApiAgent {
     this.joined = new Promise((res, rej) => { this.resolveJoined = res; this.rejectJoined = rej; });
   }
 
-  async complete() {
-    const body = {model: this.model, messages: this.compact(), tools: this.tools, tool_choice: 'required', parallel_tool_calls: false};
+  async complete(force) {
+    const cap = Number(process.env.VGC_API_MAX_USD || 3);
+    if (this.usage.cost > cap) throw Object.assign(new Error(`spending cap of $${cap} reached for this match`), {fatal: true});
+    // Only this phase's submit tool is offered, so a model can't reach for the wrong one.
+    const tools = this.tools.filter(t => !SUBMITS.has(t.function.name) || t.function.name === SUBMIT_FOR[this.kind]);
+    const body = {model: this.model, messages: this.compact(), tools, tool_choice: force ? {type: 'function', function: {name: force}} : 'required', parallel_tool_calls: false};
     if (this.provider === 'openai') {
       body.max_completion_tokens = this.maxTokens;
       if (this.effort) body.reasoning_effort = this.effort;
@@ -101,21 +107,33 @@ export class ApiAgent {
     throw lastErr;
   }
 
-  // Long matches: keep the system prompt, the team, and recent turns.
+  // Long matches: keep the system prompt, the tail of the previous decision,
+  // and the whole current decision (its instructions are never dropped);
+  // older lookup results inside the decision are shortened, not removed.
   compact() {
-    if (this.messages.length <= KEEP_RECENT + 2) return this.messages;
-    const head = this.messages.slice(0, 1);
-    let tail = this.messages.slice(-KEEP_RECENT);
-    while (tail.length && tail[0].role === 'tool') tail = tail.slice(1); // never orphan a tool result
-    return [...head, {role: 'user', content: `[Earlier turns omitted to save context. Your team plan and game plan are restated in each observation.]`}, ...tail];
+    const start = this.decisionStart ?? 1;
+    let prior = this.messages.slice(1, start).slice(-KEEP_PRIOR);
+    while (prior.length && prior[0].role === 'tool') prior = prior.slice(1);
+    const current = this.messages.slice(start);
+    const toolIdx = current.map((m, i) => (m.role === 'tool' ? i : -1)).filter(i => i >= 0);
+    const old = new Set(toolIdx.slice(0, -KEEP_TOOLS));
+    const cur = current.map((m, i) => (old.has(i) && m.content.length > 400 ? {...m, content: `${m.content.slice(0, 400)}\n[…trimmed; call again if you need it]`} : m));
+    return [this.messages[0], ...(start > 1 + prior.length ? [{role: 'user', content: '[Earlier decisions omitted to save context. Plans are restated in each observation.]'}] : []), ...prior, ...cur];
   }
 
   // One decision: show the state, let the model look things up, accept a submit.
   async decide(stateText, kind) {
+    this.kind = kind;
+    this.decisionStart = this.messages.length;
     this.messages.push({role: 'user', content: stateText});
     let nudges = 0;
-    for (let i = 0; i < (LIMITS[kind] || 6); i++) {
-      const msg = await this.complete();
+    let limit = LIMITS[kind] || 6;
+    const maxLimit = limit + 18;
+    for (let i = 0; i < limit; i++) {
+      // Wrap up research in time: a nudge past the budget, then force the submit.
+      if (kind === 'teambuilding' && i === Math.floor(limit * 0.6)) this.messages.push({role: 'user', content: `You have used ${i} of ${limit} calls for teambuilding. Validate your six with validate_team, then lock them in with team_submit.`});
+      const force = i >= limit - 2 ? SUBMIT_FOR[kind] : null;
+      const msg = await this.complete(force);
       const calls = msg.tool_calls || [];
       this.messages.push({role: 'assistant', content: msg.content || null, ...(calls.length ? {tool_calls: calls} : {})});
       if (!calls.length) {
@@ -132,6 +150,8 @@ export class ApiAgent {
         else if (SUBMITS.has(tc.function.name)) {
           out = await this.call(tc.function.name, {...args, seat: this.seat}, {noWait: true});
           if (!out.startsWith('REJECTED') && !out.startsWith('INVALID') && !out.startsWith('ERROR')) submitted = out;
+          // A rejected submit buys a few more calls to fix the problems it names.
+          else limit = Math.min(maxLimit, Math.max(limit, i + 7));
         } else out = await this.call(tc.function.name, {...args, seat: this.seat});
         this.messages.push({role: 'tool', tool_call_id: tc.id, content: String(out).slice(0, 12000)});
         this.log(`${tc.function.name}${submitted ? ' ✓' : ''}`);
