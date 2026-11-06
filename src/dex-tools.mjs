@@ -155,23 +155,35 @@ export function searchPokemon(args = {}) {
   };
 }
 
-export function pokemon({name}) {
+// Support moves that matter in doubles; everything else is one `full: true` away.
+const KEY_STATUS = new Set(['Protect', 'Detect', 'Spiky Shield', "King's Shield", 'Baneful Bunker', 'Silk Trap', 'Burning Bulwark', 'Wide Guard', 'Quick Guard',
+  'Tailwind', 'Trick Room', 'Fake Out', 'Follow Me', 'Rage Powder', 'Ally Switch', 'Helping Hand', 'Icy Wind', 'Electroweb', 'Thunder Wave', 'Will-O-Wisp', 'Spore',
+  'Sleep Powder', 'Yawn', 'Taunt', 'Encore', 'Disable', 'Parting Shot', 'Reflect', 'Light Screen', 'Aurora Veil', 'Swords Dance', 'Nasty Plot', 'Calm Mind',
+  'Dragon Dance', 'Bulk Up', 'Quiver Dance', 'Shell Smash', 'Coaching', 'Haze', 'Safeguard', 'Perish Song', 'Recover', 'Roost', 'Life Dew', 'Pollen Puff',
+  'Decorate', 'Snarl', 'Scary Face', 'Rain Dance', 'Sunny Day', 'Sandstorm', 'Snowscape', 'Psychic Terrain', 'Grassy Terrain', 'Electric Terrain', 'Misty Terrain',
+  'Substitute', 'Belly Drum', 'Imprison', 'Instruct', 'Skill Swap', 'Gastro Acid', 'Feint', 'Roar', 'Whirlwind', 'Glare', 'Leech Seed', 'Toxic', 'Charm', 'Feather Dance']);
+const keyMove = m => (m.category === 'Status' ? KEY_STATUS.has(m.name) : (m.basePower || 0) >= 50 || !m.basePower || m.priority > 0 || KEY_STATUS.has(m.name) || ['allAdjacentFoes', 'allAdjacent'].includes(m.target) || /U-turn|Volt Switch|Flip Turn/.test(m.name));
+
+export function pokemon({name, full}) {
   const sp = dex.species.get(name);
   if (!sp.exists) return {error: `No Pokemon named "${name}".`};
   if (!isSpeciesLegal(sp)) return {error: `${sp.name} is not legal in ${format.name}.`};
   const base = sp.battleOnly ? dex.species.get(Array.isArray(sp.battleOnly) ? sp.battleOnly[0] : sp.battleOnly) : sp;
-  const moves = legalMoves(base);
-  const group = cat => moves.filter(m => m.category === cat).map(shortMove);
+  const all = legalMoves(base);
+  const moves = full ? all : all.filter(keyMove);
+  const tight = m => `${m.name} ${m.type}${m.category === 'Status' ? '' : ` ${m.basePower || '—'}`}${m.priority ? ` p${m.priority > 0 ? '+' : ''}${m.priority}` : ''}${['allAdjacentFoes', 'allAdjacent'].includes(m.target) ? ' spread' : ''}`;
+  const group = cat => moves.filter(m => m.category === cat).map(full ? shortMove : tight);
   const out = {
     name: sp.name,
     types: sp.types,
     baseStats: Object.fromEntries(STATS.map(s => [STAT_LABEL[s], sp.baseStats[s]])),
     bst: bst(sp.baseStats),
     abilities: abilityList(sp).map(a => `${a}: ${shortDesc(dex.abilities.get(a))}`),
-    weightkg: sp.weightkg,
     statRangesAtLevel50: Object.fromEntries(STATS.map(s => [STAT_LABEL[s], statRange(sp, s).join('–')])),
     moves: {physical: group('Physical'), special: group('Special'), status: group('Status')},
   };
+  if (!full && moves.length < all.length) out.moreMoves = `${all.length - moves.length} more legal moves (weak attacks and niche status): pokemon({name: "${sp.name}", full: true})`;
+  if (full) out.weightkg = sp.weightkg;
   if (sp.requiredItem) out.requiredItem = sp.requiredItem;
   const megas = megaFormsOf(base);
   if (megas.length) {

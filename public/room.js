@@ -100,7 +100,7 @@ function refresh(rs, force) {
 // Anything that changes card layout gets a morph; everything else updates in place.
 function sceneSig(rs) {
   const v = rs.view;
-  const drafts = ['p1', 'p2'].map(s => buildState(v, s)).map(b => `${b.draft.join(',')}|${b.cands.join(',')}|${b.locked}`).join('/');
+  const drafts = ['p1', 'p2'].map(s => buildState(v, s)).map(b => `${b.draft.join(',')}|${b.cands.join(',')}|${b.locked}|${JSON.stringify(b.board || '')}|${b.concept || ''}`).join('/');
   return `${rs.scene}|${rs.scene === 'build' ? drafts : ''}|${v.phase}|${JSON.stringify(v.current?.previewLocked || {})}|${!!rs.full}`;
 }
 
@@ -150,7 +150,7 @@ function feedHtml(v, side) {
 // What a side has been building, from its tool activity.
 function buildState(v, side) {
   const r = v.research?.[side];
-  if (r) return {draft: r.draft, cands: r.cands, locked: !!playerOf(v, side)?.teamSubmitted, invalid: r.draftOk === false, calls: r.calls};
+  if (r) return {draft: r.draft, board: r.board, concept: r.concept, cands: r.cands, locked: !!playerOf(v, side)?.teamSubmitted, invalid: r.draftOk === false, calls: r.calls, research: r.research};
   const acts = (v.activity || []).filter(a => a.side === side);
   const lastDraft = [...acts].reverse().find(a => a.draft && a.species?.length);
   const draft = (lastDraft?.species || []).slice(0, 6);
@@ -171,7 +171,7 @@ function monCard(side, species, sheet, v, opts = {}) {
       ${sheet ? `<div class="mc-sub">${esc(sheet.item || '—')} · ${esc(sheet.ability)}</div>
       <div class="mc-types">${(info.types || []).map(t => `<span style="background:${TYPE_C[t]}">${t}</span>`).join('')}</div>
       <div class="mc-moves">${sheet.moves.map(m => `<span style="--mt:${TYPE_C[v.dex?.moves?.[m]?.type] || 'var(--line)'}">${esc(m)}</span>`).join('')}</div>` : ''}
-      <div class="mc-hp"><i></i></div></div>
+      ${opts.extra || ''}<div class="mc-hp"><i></i></div></div>
   </div>`;
 }
 
@@ -192,9 +192,18 @@ function column(rs, side, kind, n) {
   if (kind === 'waiting') return head;
   if (kind === 'build') {
     const b = buildState(v, side);
-    const slots = Array.from({length: 6}, (_, i) => (b.draft[i] ? monCard(side, b.draft[i], null, v, {cls: `slotcard ${b.locked ? 'locked' : ''}`}) : '<div class="mc empty"></div>')).join('');
-    return `${head}<div class="lbl">${b.locked ? '🔒 Team locked' : b.draft.length ? `Draft${b.invalid ? ' <span class="bad">· validator found problems</span>' : ''}` : 'Draft'}</div>
-      <div class="draft ${b.invalid ? 'shake' : ''}">${slots}</div>
+    const slot = i => {
+      const x = b.board?.[i];
+      const sp = x?.species || (!b.board ? b.draft[i] : null);
+      if (!sp) return '<div class="mc empty"></div>';
+      const moves = x?.moves?.length || 0;
+      const done = b.locked || x?.complete;
+      const extra = x ? `<div class="slotmeta">${x.item ? esc(x.item) : '<span class="muted">no item yet</span>'}</div><div class="dots">${[0, 1, 2, 3].map(k => `<i class="${k < moves ? 'on' : ''}"></i>`).join('')}</div>` : '';
+      return monCard(side, sp, null, v, {cls: `slotcard ${done ? 'locked' : ''}`, badge: done ? '✓' : '', extra});
+    };
+    const status = b.locked ? '🔒 Team locked' : b.board ? `Draft board · ${(b.board || []).filter(Boolean).length}/6${b.research ? ` · ${b.research} lookups` : ''}` : 'Draft';
+    return `${head}${b.concept ? `<div class="concept"><span class="k2">Concept</span> ${esc(b.concept)}</div>` : ''}<div class="lbl">${status}</div>
+      <div class="draft">${Array.from({length: 6}, (_, i) => slot(i)).join('')}</div>
       <div class="lbl">Considering${b.calls ? ` <span class="muted">· ${b.calls} tool calls</span>` : ''}</div><div class="cands">${b.cands.map(sp => monCard(side, sp, null, v, {cls: 'chip2'})).join('') || '<span class="muted small">looking through the dex…</span>'}</div>
       <div class="feed"></div>`;
   }

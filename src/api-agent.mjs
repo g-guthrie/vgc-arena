@@ -17,10 +17,12 @@ export const PROVIDERS = {
 };
 
 // The model never handles its seat token or the lobby; the loop does.
-const HIDDEN = new Set(['arena_join', 'arena_wait', 'arena_state', 'arena_forfeit', 'arena_models', 'match_transcript']);
-const SUBMITS = new Set(['team_submit', 'preview_submit', 'turn_submit']);
-const LIMITS = {teambuilding: 40, preview: 6, move: 6, switch: 4};
-const SUBMIT_FOR = {teambuilding: 'team_submit', preview: 'preview_submit', move: 'turn_submit', switch: 'turn_submit'};
+// Teambuilding goes through the draft board only (one path, checked at every step).
+const HIDDEN = new Set(['arena_join', 'arena_wait', 'arena_state', 'arena_forfeit', 'arena_models', 'match_transcript', 'team_submit', 'validate_team']);
+const SUBMITS = new Set(['team_lock', 'preview_submit', 'turn_submit']);
+const DRAFT_TOOLS = new Set(['draft_concept', 'draft_set', 'draft_clear', 'draft_view']);
+const LIMITS = {teambuilding: 60, preview: 6, move: 6, switch: 4};
+const SUBMIT_FOR = {teambuilding: 'team_lock', preview: 'preview_submit', move: 'turn_submit', switch: 'turn_submit'};
 const KEEP_PRIOR = 4;     // messages kept from before the current decision
 const KEEP_TOOLS = 6;     // recent tool results kept whole within the current decision
 
@@ -34,7 +36,24 @@ function toolSchemas() {
 }
 
 const SYSTEM = `You are playing in VGC Arena through function calls. Each user message is the arena's current view of your match.
-Act only by calling functions. Use the dex functions (search_pokemon, pokemon, search_moves, move, item, ability, search_items, calc, validate_team) as much as you need while teambuilding, then finish every decision with exactly one submit call (team_submit, preview_submit or turn_submit). Never answer in plain text.`;
+Act only by calling functions. Teambuilding follows the draft-board procedure in the observation (draft_concept, draft_set, team_lock), with the dex functions for research; every board reply ends with NEXT, so follow it. Finish every other decision with exactly one submit call (preview_submit or turn_submit).
+If you cannot call functions, reply with only a JSON object {"tool": "<function name>", "args": {...}} and nothing else.`;
+
+// Pull a {"tool": name, "args": {...}} object out of a plain-text reply.
+function jsonToolCall(content, tools) {
+  const text = String(content || '');
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  for (let end = text.lastIndexOf('}'); end > start; end = text.lastIndexOf('}', end - 1)) {
+    try {
+      const obj = JSON.parse(text.slice(start, end + 1));
+      const tool = obj.tool || obj.name || obj.function;
+      const args = obj.args || obj.arguments || obj.parameters || {};
+      if (typeof tool === 'string' && tools.some(t => t.function.name === tool)) return {tool, args: typeof args === 'string' ? JSON.parse(args) : args};
+    } catch {}
+  }
+  return null;
+}
 
 // Cheap key check before anyone waits on a match.
 export async function checkKey(provider, key) {
@@ -131,14 +150,19 @@ export class ApiAgent {
     const maxLimit = limit + 18;
     for (let i = 0; i < limit; i++) {
       // Wrap up research in time: a nudge past the budget, then force the submit.
-      if (kind === 'teambuilding' && i === Math.floor(limit * 0.6)) this.messages.push({role: 'user', content: `You have used ${i} of ${limit} calls for teambuilding. Validate your six with validate_team, then lock them in with team_submit.`});
+      if (kind === 'teambuilding' && i === Math.floor(limit * 0.6)) this.messages.push({role: 'user', content: `You have used ${i} of ${limit} calls for teambuilding. Stop researching: fill any empty slots, finish every set with draft_set, then team_lock. Follow the board's NEXT line.`});
       const force = i >= limit - 2 ? SUBMIT_FOR[kind] : null;
       const msg = await this.complete(force);
-      const calls = msg.tool_calls || [];
+      let calls = msg.tool_calls || [];
+      // Fallback for models that answer in text: accept {"tool": …, "args": …}.
+      if (!calls.length) {
+        const fb = jsonToolCall(msg.content, this.tools);
+        if (fb) calls = [{id: `json_${Date.now()}_${i}`, type: 'function', function: {name: fb.tool, arguments: JSON.stringify(fb.args)}}];
+      }
       this.messages.push({role: 'assistant', content: msg.content || null, ...(calls.length ? {tool_calls: calls} : {})});
       if (!calls.length) {
         if (++nudges > 2) break;
-        this.messages.push({role: 'user', content: 'Respond by calling a function. Finish this decision with a submit call.'});
+        this.messages.push({role: 'user', content: `Respond by calling a function (this decision ends with ${SUBMIT_FOR[kind]}). If you cannot call functions, reply with only {"tool": "${SUBMIT_FOR[kind]}", "args": {...}}.`});
         continue;
       }
       let submitted = null;

@@ -9,6 +9,9 @@ import {Game, describeLines} from './game.mjs';
 import {renderObservation, legalOptions, toShowdownChoice, REQUIRED_FIELDS} from './observation.mjs';
 import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION} from './briefing.mjs';
 import {resolveModel} from './models.mjs';
+import {newDraft, setSlot, clearSlot, boardText, lockCheck, boardSummary} from './draft.mjs';
+
+const RESEARCH_TOOLS = new Set(['search_pokemon', 'pokemon', 'search_moves', 'move', 'search_items', 'item', 'ability', 'calc']);
 
 const MAX_FIELD = 700;
 // Strict events can hide live research and picks from spectators.
@@ -67,7 +70,7 @@ export class Match extends EventEmitter {
       harness: String(harness || detectedHarness || '').slice(0, 80), client: client || {}, detectedHarness: detectedHarness || null,
       owner: String(owner || '').slice(0, 60), ownerVerified: !!ownerVerified, flags: flags || [],
       joinedAt: new Date().toISOString(), waitingSince: Date.now(),
-      team: null, teamText: null, teamPlan: null, sheet: null, teamAttempts: 0,
+      team: null, teamText: null, teamPlan: null, sheet: null, teamAttempts: 0, draft: newDraft(),
     };
     this.log(`${this.seats[side].name} (${model}${identity?.effort ? `:${identity.effort}` : ''}) joined as ${side}`);
     if (this.seats.p1 && this.seats.p2) this.startTeambuilding();
@@ -116,6 +119,59 @@ export class Match extends EventEmitter {
     if (!team_plan || String(team_plan).trim().length < 10) return {error: 'team_plan is required (2–4 sentences).'};
     this.acceptTeam(side, v.sets, team_plan);
     this.log(`${seat.name} submitted a team`);
+    if (SIDES.every(s => this.seats[s].team)) this.startGame();
+    return {ok: true};
+  }
+
+  // ---- the draft board (procedural teambuilding)
+  draftSeat(token) {
+    const side = this.sideOf(token);
+    const seat = this.seats[side];
+    if (this.phase !== 'teambuilding') return {error: `Not in teambuilding (phase: ${this.phase}).`};
+    if (seat.team) return {error: 'Your team is already locked.'};
+    return {side, seat};
+  }
+
+  draftConcept(token, {concept}) {
+    const d = this.draftSeat(token);
+    if (d.error) return d;
+    if (!concept || String(concept).trim().length < 10) return {error: 'concept needs 2–3 sentences: archetype, speed mode, win condition.'};
+    d.seat.draft.concept = clip(String(concept).trim());
+    this.emit('change');
+    return {ok: true, board: boardText(d.seat.draft)};
+  }
+
+  draftSet(token, args) {
+    const d = this.draftSeat(token);
+    if (d.error) return d;
+    const r = setSlot(d.seat.draft, args);
+    this.emit('change');
+    if (r.error) return {error: r.error, board: boardText(d.seat.draft)};
+    return {ok: true, notes: r.notes, board: boardText(d.seat.draft)};
+  }
+
+  draftClear(token, {slot}) {
+    const d = this.draftSeat(token);
+    if (d.error) return d;
+    const r = clearSlot(d.seat.draft, slot);
+    this.emit('change');
+    return r.error ? {error: r.error, board: boardText(d.seat.draft)} : {ok: true, board: boardText(d.seat.draft)};
+  }
+
+  draftView(token) {
+    const side = this.sideOf(token);
+    return {ok: true, board: boardText(this.seats[side].draft)};
+  }
+
+  teamLock(token, {team_plan}) {
+    const d = this.draftSeat(token);
+    if (d.error) return d;
+    d.seat.teamAttempts++;
+    if (!team_plan || String(team_plan).trim().length < 10) return {error: 'team_plan is required (2–4 sentences).', board: boardText(d.seat.draft)};
+    const v = lockCheck(d.seat.draft);
+    if (!v.ok) return {error: 'The team is not ready to lock.', problems: v.problems, board: boardText(d.seat.draft, {lockProblems: v.problems})};
+    this.acceptTeam(d.side, v.sets, team_plan);
+    this.log(`${d.seat.name} locked a team`);
     if (SIDES.every(s => this.seats[s].team)) this.startGame();
     return {ok: true};
   }
@@ -236,6 +292,7 @@ export class Match extends EventEmitter {
   noteActivity(token, tool, args, ok) {
     let side;
     try { side = this.sideOf(token); } catch { return; }
+    if (this.phase === 'teambuilding' && RESEARCH_TOOLS.has(tool) && this.seats[side].draft) this.seats[side].draft.research++;
     const {seat, ...a} = args || {};
     const mon = t => { const l = String(t || '').trim().split('\n')[0].split('@')[0].trim(); const m = /\(([^)]+)\)/.exec(l); return (m && !/^[MF]$/.test(m[1]) ? m[1] : l.replace(/\(.*?\)/g, '')).trim(); };
     const act = x => (x.switch ? `↻ ${x.switch}` : `${x.move}${x.target ? `→${x.target}` : ''}${x.mega ? ' ✦' : ''}`);
@@ -245,14 +302,17 @@ export class Match extends EventEmitter {
       search_moves: () => Object.entries(a).map(([k, v]) => `${k} ${v}`).join(', '), search_items: () => a.query || 'all',
       calc: () => `${mon(a.attacker)} ${a.move} → ${mon(a.defender)}`,
       validate_team: () => `${String(a.team || '').split(/\n\s*\n/).filter(Boolean).length} Pokémon`,
-      team_submit: () => 'locks the team', preview_submit: () => (a.bring || []).join(' · '),
+      team_submit: () => 'locks the team', team_lock: () => 'locks the team', preview_submit: () => (a.bring || []).join(' · '),
+      draft_concept: () => String(a.concept || '').slice(0, 90),
+      draft_set: () => [`slot ${a.slot}`, a.species, a.item && `@ ${a.item}`, a.ability, a.nature, a.moves && [].concat(a.moves).join(', '), a.sp && 'stat points'].filter(Boolean).join(' · '),
+      draft_clear: () => `clears slot ${a.slot}`,
       turn_submit: () => (a.actions || []).map(act).join(' · '), arena_forfeit: () => 'forfeits',
     }[tool]?.() || '';
     // Pokémon this call was about, so the page can grow candidate cards.
     const teamSpecies = t => String(t || '').split(/\n\s*\n/).map(b => mon(b)).filter(Boolean).map(x => (/\((.+)\)/.exec(x) ? /\((.+)\)/.exec(x)[1] : x));
     const speciesOf = {
       pokemon: () => [a.name], calc: () => [mon(a.attacker), mon(a.defender)],
-      validate_team: () => teamSpecies(a.team), team_submit: () => teamSpecies(a.team),
+      validate_team: () => teamSpecies(a.team), team_submit: () => teamSpecies(a.team), draft_set: () => (a.species ? [a.species] : []),
     }[tool]?.() || [];
     const species = speciesOf.map(x => { const sp = dex.species.get(x); return sp.exists ? sp.name : null; }).filter(Boolean);
     this.activity.push({side, tool, ok, detail, species, draft: tool === 'validate_team' || tool === 'team_submit', t: Date.now(), game: this.game?.n || 0, turn: this.currentGame?.turn || 0});
@@ -425,7 +485,7 @@ export class Match extends EventEmitter {
     const g = this.game;
     if (g?.view) g.view[side].promptedAt ||= Date.now();
     if (this.phase === 'teambuilding') {
-      return {...base, yourTurn: true, kind: 'teambuilding', text: `${TEAMBUILD_TEXT}\n\nYour opponent is anonymous to you (and you to them). You will see their team sheet at team preview.`};
+      return {...base, yourTurn: true, kind: 'teambuilding', text: `${TEAMBUILD_TEXT}\n\nYour opponent is anonymous to you (and you to them). You will see their team sheet at team preview.\n\n${boardText(this.seats[side].draft)}`};
     }
     if (this.phase === 'preview') {
       const L = [];
@@ -514,8 +574,11 @@ export class Match extends EventEmitter {
         const last = [...acts].reverse().find(a => a.draft && a.species?.length);
         const seen = [];
         for (const a of acts) for (const sp of a.species || []) if (!seen.includes(sp)) seen.push(sp);
-        const draft = (last?.species || []).slice(0, 6);
-        return [sd, {draft, draftOk: last ? last.ok : null, draftTool: last?.tool || null, cands: seen.filter(x => !draft.includes(x)).slice(-14), calls: acts.length}];
+        // The draft board is the source of truth; older text-team activity is the fallback.
+        const board = this.seats[sd]?.draft;
+        const fromBoard = board?.slots.some(Boolean) ? board.slots.filter(Boolean).map(x => x.species) : null;
+        const draft = this.seats[sd]?.team ? this.seats[sd].team.map(x => dex.species.get(x.species).name) : fromBoard || (last?.species || []).slice(0, 6);
+        return [sd, {draft, board: board ? boardSummary(board) : null, concept: board?.concept || '', draftOk: fromBoard ? true : last ? last.ok : null, cands: seen.filter(x => !draft.includes(x)).slice(-14), calls: acts.length, research: board?.research || 0}];
       })),
       // Each game's chosen four, once that game's battle has started.
       brings: this.games.map(g => (g.preview.p1 && g.preview.p2 && (finished || reveal || !SEALED) ? {n: g.n, p1: g.preview.p1.bring, p2: g.preview.p2.bring} : {n: g.n})),

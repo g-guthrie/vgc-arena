@@ -6,6 +6,9 @@ import {standaloneCalc} from './calc.mjs';
 import {SUBMIT_WAIT_MS} from './arena.mjs';
 import {transcript} from './artifacts.mjs';
 import {listModels} from './models.mjs';
+import {nextStep, RESEARCH_BUDGET} from './draft.mjs';
+
+const RESEARCH = new Set(['search_pokemon', 'pokemon', 'search_moves', 'move', 'search_items', 'item', 'ability', 'calc']);
 
 const seat = z.string().describe('Your seat token from arena_join. Keep it private.');
 const optSeat = z.string().optional().describe('Your seat token (optional; lets spectators see your research activity)');
@@ -33,6 +36,11 @@ function fmt(v, indent = '') {
 function stateText(st, extra = '') {
   const head = `[room ${st.room || '?'} · match ${st.matchId} · you are ${st.side} · phase ${st.phase}${st.game ? ` · game ${st.game}` : ''} · set ${st.score.you}–${st.score.opponent}${st.yourTurn ? ' · YOUR TURN' : ''}${st.finished ? ' · FINISHED' : ''}]`;
   return `${extra ? `${extra}\n\n` : ''}${head}\n${st.text}`;
+}
+
+function draftReply(res) {
+  if (res.error) return `NOT APPLIED — ${res.error}${res.board ? `\n\n${res.board}` : ''}`;
+  return `${res.notes?.length ? `Note: ${res.notes.join('; ')}.\n\n` : ''}${res.board}`;
 }
 
 async function afterSubmit(arena, seatToken, res, okText, tool) {
@@ -132,9 +140,9 @@ export const TOOLS = [
   },
   {
     name: 'pokemon',
-    description: 'Full data for one Pokémon: types, base stats, abilities, level-50 stat ranges, every move it can legally use in this format, and Mega forms.',
+    description: 'One Pokémon in this format: types, base stats, abilities, level-50 stat ranges, Mega forms, and its legal moves (compact: attacks and key support moves; full: true lists every legal move).',
     input: {
-      seat: optSeat,name: z.string()},
+      seat: optSeat, name: z.string(), full: z.boolean().optional().describe('List every legal move, not just the relevant ones')},
     async run(_, args) { return fmt(dexTools.pokemon(args)); },
   },
   {
@@ -178,9 +186,50 @@ export const TOOLS = [
       seat: optSeat,team: z.string().describe('Showdown export text for all 6')},
     async run(_, a) { const v = dexTools.validateTeam(a); return fmt({ok: v.ok, problems: v.problems, summary: v.ok ? v.summary : undefined}); },
   },
+  // ---------------------------------------------------------------- the draft board
+  {
+    name: 'draft_concept',
+    description: 'Teambuilding step 1: record your team concept (archetype, speed mode, win condition). Returns the draft board.',
+    input: {seat, concept: z.string().describe('2–3 sentences')},
+    async run(arena, a) { return draftReply(arena.matchFor(a.seat).draftConcept(a.seat, a)); },
+  },
+  {
+    name: 'draft_set',
+    description: 'Set or change one slot of your draft (1–6). Every field is optional and merges into the slot; it is checked immediately and errors come back with legal alternatives. Changing species resets the slot. Returns the board, a team report and the next step.',
+    input: {
+      seat, slot: z.number().describe('1–6'),
+      species: z.string().optional(), item: z.string().optional(), ability: z.string().optional(), nature: z.string().optional(),
+      sp: z.record(z.string(), z.number()).optional().describe('Stat points, e.g. {"hp": 32, "spa": 32, "spe": 2}: 0–32 each, 66 total'),
+      moves: z.array(z.string()).optional().describe('Up to 4 moves (replaces the slot\'s moves)'),
+    },
+    async run(arena, a) { return draftReply(arena.matchFor(a.seat).draftSet(a.seat, a)); },
+  },
+  {
+    name: 'draft_clear',
+    description: 'Empty one slot of your draft.',
+    input: {seat, slot: z.number()},
+    async run(arena, a) { return draftReply(arena.matchFor(a.seat).draftClear(a.seat, a)); },
+  },
+  {
+    name: 'draft_view',
+    description: 'Show your draft board, team report and next step.',
+    input: {seat},
+    async run(arena, a) { return draftReply(arena.matchFor(a.seat).draftView(a.seat)); },
+  },
+  {
+    name: 'team_lock',
+    description: 'Teambuilding step 5: lock the six on your draft board for the whole match. Checked by the format validator first; if anything is wrong nothing is locked and the problems are listed.',
+    input: {seat, team_plan: z.string().describe('2–4 sentences: modes, leads, win conditions, answers to top threats')},
+    async run(arena, a) {
+      const m = arena.matchFor(a.seat);
+      const res = m.teamLock(a.seat, a);
+      if (res.error) return `REJECTED — nothing was locked. ${res.error}\n\n${res.board || ''}`;
+      return afterSubmit(arena, a.seat, res, 'Team locked.', 'team_lock');
+    },
+  },
   {
     name: 'team_submit',
-    description: 'Lock in your 6-Pokémon team for the whole match (validated first; rejected teams can be fixed and resubmitted).',
+    description: 'Alternative to the draft board: lock a whole team pasted as Showdown export text (validated first; rejected teams can be fixed and resubmitted).',
     input: {seat, team: z.string(), team_plan: z.string().describe('2–4 sentences: modes, leads, win conditions, answers to top threats')},
     async run(arena, a) {
       const m = arena.matchFor(a.seat);
@@ -239,7 +288,13 @@ export async function runTool(arena, name, args = {}, ctx = {}) {
     out = `ERROR: ${err.message}`;
   }
   if (parsed.data.seat && !['arena_wait', 'arena_state', 'arena_join'].includes(name)) {
-    try { arena.matchFor(parsed.data.seat).noteActivity(parsed.data.seat, name, parsed.data, !/^(REJECTED|ERROR|INVALID)/.test(out) && !/ok: false/.test(out)); } catch {}
+    try {
+      const m = arena.matchFor(parsed.data.seat);
+      m.noteActivity(parsed.data.seat, name, parsed.data, !/^(REJECTED|ERROR|INVALID|NOT APPLIED)/.test(out) && !/ok: false/.test(out));
+      // Research during teambuilding always ends with the budget and the next step.
+      const seat = m.seats[m.sideOf(parsed.data.seat)];
+      if (m.phase === 'teambuilding' && !seat.team && RESEARCH.has(name)) out += `\n\n[research used ${seat.draft.research} of ~${RESEARCH_BUDGET} · NEXT → ${nextStep(seat.draft)}]`;
+    } catch {}
   }
   return out;
 }

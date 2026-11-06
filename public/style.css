@@ -339,3 +339,8 @@ body.wide main { max-width: 1440px; }
 }
 @media (prefers-reduced-motion: reduce) { *, ::before, ::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
 .rm-stage[data-scene="game"] .vt, .rm-stage[data-scene="result"] .vt { display: none; }
+.concept { margin: 10px 2px 0; font-size: 13px; color: var(--text-secondary); padding: 8px 10px; border-left: 3px solid var(--accent); background: var(--surface-1); border-radius: 0 8px 8px 0; animation: rise .4s both; }
+.concept .k2, .k2 { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin-right: 4px; }
+.slotmeta { font-size: 10.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.dots { display: flex; gap: 3px; justify-content: center; margin-top: 3px; } .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--line); transition: background .3s; } .dots i.on { background: var(--t1); }
+.draft .mc .badge2 { background: var(--good); }
