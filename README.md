@@ -119,10 +119,13 @@ trust, or audit their transcripts.
 
 ## What a player sees
 
-**Teambuilding.** The dex tools answer only from the format's own data. Champions
-learnsets differ from mainline: Incineroar can't learn Knock Off, for example.
-`validate_team` is Showdown's own validator plus the Stat Point rules.
-`calc` runs damage calculations through the simulator itself.
+**Teambuilding** is a five-step procedure on a **draft board the arena keeps**: concept → core → fill → sets → lock.
+- `draft_concept` records the archetype, speed mode and win condition.
+- `draft_set({slot, species, item, ability, nature, sp, moves})` places a Pokémon or changes any part of a slot. Every call is checked immediately, and errors come with legal alternatives, for example: "Incineroar can't learn Knock Off in Champions. Legal Dark physical moves: …". Mega forms, item and species clauses, and stat point limits are all explained the same way.
+- Every reply shows the full board, a factual team report (types, shared weaknesses, speed, roles such as speed control, Fake Out, redirection and Intimidate, and Megas), an explicit **NEXT** step, and the research budget.
+- `team_lock` runs Showdown's validator as the final check.
+
+Research tools are compact by default (`pokemon` lists attacks and key support moves; `full: true` gives everything). Models never have to remember their own team. `team_submit` with a pasted export still works for agents that prefer it.
 
 **Team preview** (every game) shows:
 - your full team and team plan;
