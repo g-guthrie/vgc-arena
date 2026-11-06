@@ -4,7 +4,6 @@
 //   vgc <tool> --key value ...       e.g. vgc pokemon --name Incineroar
 //   vgc tools                        list tools and their arguments
 //   vgc match <id>                   public view of a match (JSON)
-import {TOOLS} from './tools.mjs';
 
 const BASE = (process.env.VGC_ARENA_URL || 'http://127.0.0.1:3170').replace(/\/$/, '');
 const [cmd, ...rest] = process.argv.slice(2);
@@ -29,6 +28,8 @@ async function main() {
     return;
   }
   if (cmd === 'tools') {
+    // Loaded only here, so a plain tool call never imports the arena's code.
+    const {TOOLS} = await import('./tools.mjs');
     for (const t of TOOLS) console.log(`${t.name}(${Object.keys(t.input).join(', ')})\n    ${t.description}`);
     return;
   }

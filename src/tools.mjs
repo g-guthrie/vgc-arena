@@ -6,7 +6,6 @@ import {standaloneCalc} from './calc.mjs';
 import {SUBMIT_WAIT_MS} from './arena.mjs';
 import {transcript} from './artifacts.mjs';
 import {listModels} from './models.mjs';
-import {nextStep, RESEARCH_BUDGET} from './draft.mjs';
 
 const RESEARCH = new Set(['search_pokemon', 'pokemon', 'search_moves', 'move', 'search_items', 'item', 'ability', 'calc']);
 
@@ -36,6 +35,14 @@ function fmt(v, indent = '') {
 function stateText(st, extra = '') {
   const head = `[room ${st.room || '?'} · match ${st.matchId} · you are ${st.side} · phase ${st.phase}${st.game ? ` · game ${st.game}` : ''} · set ${st.score.you}–${st.score.opponent}${st.yourTurn ? ' · YOUR TURN' : ''}${st.finished ? ' · FINISHED' : ''}]`;
   return `${extra ? `${extra}\n\n` : ''}${head}\n${st.text}`;
+}
+
+// A refused teambuilding answer: the reason and the open question, not the
+// whole board and option lists again (they are in the previous reply).
+function notApplied(m, seat, error) {
+  if (m.phase !== 'teambuilding') return `NOT APPLIED — ${error}`;
+  const q = m.draftQuestion(seat);
+  return `NOT APPLIED — ${error}\nNothing changed. QUESTION ${q.n} of ${q.of} (${q.title}) is still open; its options are in the previous reply (arena_state shows them again).`;
 }
 
 async function afterSubmit(arena, seatToken, res, okText, tool) {
@@ -86,7 +93,7 @@ export const TOOLS = [
     name: 'arena_state',
     description: 'Your current view: whose turn it is and, if it is yours, the full observation and the exact fields to submit.',
     input: {seat},
-    async run(arena, {seat: s}) { return stateText(arena.matchFor(s).peekFor(s)); },
+    async run(arena, {seat: s}) { return stateText(arena.matchFor(s).stateFor(s)); },
   },
   {
     name: 'arena_wait',
@@ -188,7 +195,7 @@ export const TOOLS = [
     async run(arena, a) {
       const m = arena.matchFor(a.seat);
       const res = m.draftAnswer(a.seat, a);
-      if (res.error) return `NOT APPLIED — ${res.error}\n\n${m.phase === 'teambuilding' ? m.guidedText(a.seat) : ''}`;
+      if (res.error) return notApplied(m, a.seat, res.error);
       if (res.locked) return afterSubmit(arena, a.seat, res, 'Team locked.', 'draft_answer');
       return m.guidedText(a.seat);
     },
@@ -200,7 +207,7 @@ export const TOOLS = [
     async run(arena, a) {
       const m = arena.matchFor(a.seat);
       const res = m.draftRevise(a.seat, a);
-      return res.error ? `NOT APPLIED — ${res.error}\n\n${m.guidedText(a.seat)}` : m.guidedText(a.seat);
+      return res.error ? notApplied(m, a.seat, res.error) : m.guidedText(a.seat);
     },
   },
   {
@@ -265,9 +272,9 @@ export async function runTool(arena, name, args = {}, ctx = {}) {
     try {
       const m = arena.matchFor(parsed.data.seat);
       m.noteActivity(parsed.data.seat, name, parsed.data, !/^(REJECTED|ERROR|INVALID|NOT APPLIED)/.test(out) && !/ok: false/.test(out));
-      // Research during teambuilding always ends with the budget and the next step.
+      // Research during teambuilding ends with the question still waiting.
       const seat = m.seats[m.sideOf(parsed.data.seat)];
-      if (m.phase === 'teambuilding' && !seat.team && RESEARCH.has(name)) out += `\n\n[research used ${seat.draft.research} of ~${RESEARCH_BUDGET} · NEXT → ${nextStep(seat.draft)}]`;
+      if (m.phase === 'teambuilding' && !seat.team && RESEARCH.has(name)) { const q = m.draftQuestion(parsed.data.seat); out += `\n\n[waiting for your answer: QUESTION ${q.n} of ${q.of} · ${q.title}]`; }
     } catch {}
   }
   return out;

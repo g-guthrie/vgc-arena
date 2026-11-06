@@ -15,6 +15,11 @@ export const QUESTIONS = 9;
 const NATURES = () => dex.natures.all().map(n => n.name).sort();
 const natureNote = n => { const x = dex.natures.get(n); return x.plus ? `${n} (+${x.plus} −${x.minus})` : `${n} (neutral)`; };
 
+// Items held by the other slots (item clause), as "Focus Sash (Whimsicott)".
+function heldElsewhere(draft, i) {
+  return draft.slots.map((s, j) => (s && j !== i && s.item ? `${dex.items.get(s.item).name} (${s.species})` : null)).filter(Boolean);
+}
+
 function itemsFor(draft, i) {
   const sp = dex.species.get(draft.slots[i].species);
   const used = new Set(draft.slots.map((s, j) => (s && j !== i && s.item ? toID(s.item) : null)).filter(Boolean));
@@ -52,6 +57,7 @@ export function question(draft) {
       options: {
         abilities: abilities.map(a => `${a} — ${shortDesc(dex.abilities.get(a))}`),
         items: items,
+        heldElsewhere: heldElsewhere(draft, i),
         natures: NATURES().map(natureNote),
         moves: moves.map(m => `${m.name} (${m.type} ${m.category === 'Status' ? 'status' : `${m.basePower || '—'} ${m.category === 'Physical' ? 'phys' : 'spec'}`}${m.priority ? ` p${m.priority > 0 ? '+' : ''}${m.priority}` : ''}${['allAdjacentFoes', 'allAdjacent'].includes(m.target) ? ' spread' : ''})`),
       },
@@ -73,7 +79,7 @@ export function questionText(q) {
   if (q.step === 'species') L.push(`Options: ${q.optionsNote} (search_pokemon to browse).`);
   if (q.step === 'set') {
     L.push(`Abilities: ${q.options.abilities.join(' · ')}`);
-    L.push(`Items (not held by your other Pokémon; Mega Stone only if it is this Pokémon's): ${q.options.items.join(', ')}`);
+    L.push(`Items (a Mega Stone appears only for the Pokémon it belongs to${q.options.heldElsewhere.length ? `; already held, so not listed: ${q.options.heldElsewhere.join(', ')}` : ''}): ${q.options.items.join(', ')}`);
     L.push(`Natures: ${q.options.natures.join(', ')}`);
     L.push(`Legal moves: ${q.options.moves.join(' · ')}`);
   }

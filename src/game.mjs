@@ -128,13 +128,18 @@ export function describeLines(lines, viewer) {
     return f ? ` (${f.slice(7).replace(/^(item|ability|move): /, '')})` : '';
   };
   const out = [];
-  for (const line of lines) {
+  for (const [li, line] of lines.entries()) {
     if (!line || line[0] !== '|') continue;
     const p = line.slice(1).split('|');
     const t = p[0];
     switch (t) {
     case 'turn': out.push(`— Turn ${p[1]} —`); break;
-    case 'move': out.push(`${who(p[1])} used ${p[2]}${p[3] && p[3] !== p[1] ? ` → ${who(p[3])}` : ''}${p.includes('[miss]') ? ' (missed)' : ''}${p.includes('[still]') && p.includes('[miss]') ? '' : ''}`); break;
+    case 'move': {
+      const via = p.find(x => x?.startsWith('[from]'));
+      const how = !via ? '' : via === '[from] lockedmove' ? ' (continuing)' : ` (via ${via.slice(7).replace(/^(item|ability|move): /, '')})`;
+      out.push(`${who(p[1])} used ${p[2]}${p[3] && p[3] !== p[1] ? ` → ${who(p[3])}` : ''}${how}${p.includes('[miss]') ? ' (missed)' : ''}`);
+      break;
+    }
     case 'switch': case 'drag': out.push(`${who(p[1])} ${t === 'drag' ? 'was dragged in' : 'switched in'} (${p[2].split(',')[0]}, ${hp(p[3])})`); break;
     case '-damage': out.push(`  ${who(p[1])} → ${hp(p[2])}${from(p)}`); break;
     case '-heal': out.push(`  ${who(p[1])} healed → ${hp(p[2])}${from(p)}`); break;
@@ -156,7 +161,7 @@ export function describeLines(lines, viewer) {
     case '-item': out.push(`  ${who(p[1])} has ${p[2]}${from(p)}`); break;
     case '-enditem': out.push(`  ${who(p[1])}'s ${p[2]} ${p.some(x => x?.startsWith('[eat]')) ? 'was eaten' : 'was used up/removed'}${from(p)}`); break;
     case '-fail': out.push(`  ${who(p[1])}: it failed${p[2] ? ` (${p[2].replace('move: ', '')})` : ''}`); break;
-    case '-miss': out.push(`  ${who(p[2] || p[1])} avoided the attack`); break;
+    case '-miss': out.push(`  missed${p[2] ? ` ${who(p[2])}` : ''} (accuracy)`); break;
     case '-immune': out.push(`  ${who(p[1])} is immune${from(p)}`); break;
     case '-supereffective': out.push(`  super effective on ${who(p[1])}`); break;
     case '-resisted': out.push(`  resisted by ${who(p[1])}`); break;
@@ -169,7 +174,7 @@ export function describeLines(lines, viewer) {
     case '-transform': out.push(`  ${who(p[1])} transformed into ${who(p[2])}`); break;
     case '-formechange': out.push(`  ${who(p[1])} changed form to ${p[2]}`); break;
     case '-hitcount': out.push(`  hit ${p[2]} times`); break;
-    case '-prepare': out.push(`  ${who(p[1])} is charging ${p[2]}`); break;
+    case '-prepare': out.push(String(lines[li + 1] || '').startsWith(`|-anim|${p[1]}`) ? `  ${p[2]} charged instantly and fired this turn` : `  ${who(p[1])} is charging ${p[2]}; it fires next turn`); break;
     case 'win': out.push(`WINNER: ${p[1]}`); break;
     case 'tie': out.push('TIE'); break;
     default: break;

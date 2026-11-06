@@ -6,7 +6,6 @@
 import {dex, toID, Teams} from './showdown.mjs';
 import {isSpeciesLegal, legalMoves, megaFormsOf, computeStats, validateTeam, shortDesc, SP_MAX_PER_STAT, SP_MAX_TOTAL, STATS, STAT_LABEL} from './dex-tools.mjs';
 
-export const RESEARCH_BUDGET = 30;
 const SLOTS = 6;
 const STAT_ALIASES = {hp: 'hp', atk: 'atk', attack: 'atk', def: 'def', defense: 'def', spa: 'spa', spatk: 'spa', specialattack: 'spa', spd: 'spd', spdef: 'spd', specialdefense: 'spd', spe: 'spe', speed: 'spe'};
 const ROLE_MOVES = {
@@ -127,13 +126,6 @@ export function setSlot(draft, args) {
   return {ok: true, notes};
 }
 
-export function clearSlot(draft, slot) {
-  const n = Number(slot);
-  if (!(n >= 1 && n <= SLOTS)) return {error: `slot must be 1–${SLOTS}.`};
-  draft.slots[n - 1] = null;
-  return {ok: true};
-}
-
 export function slotMissing(s) {
   const miss = [];
   if (!s.ability) miss.push('ability');
@@ -178,7 +170,11 @@ function report(draft) {
     return `${sp.name} ${st ?? `base ${sp.baseStats.spe}`}`;
   });
   L.push(`Speed: ${speeds.join(' · ')}`);
+  const megas = filled.filter(s => s.item && dex.items.get(s.item).megaStone).map(s => `${s.species} (${s.item})`);
+  if (megas.length) L.push(`Mega Stones: ${megas.join(', ')} — only one Pokémon can Mega Evolve per battle.`);
   const roles = [];
+  // Roles come from moves, so they mean nothing until moves are chosen.
+  if (!filled.some(s => s.moves.length)) return L;
   for (const [role, list] of Object.entries(ROLE_MOVES)) {
     let who;
     if (role === 'spread attacks') who = filled.filter(s => s.moves.some(m => ['allAdjacentFoes', 'allAdjacent'].includes(dex.moves.get(m).target) && dex.moves.get(m).category !== 'Status'));
@@ -189,20 +185,7 @@ function report(draft) {
   const intim = filled.filter(s => toID(s.ability) === 'intimidate').map(s => s.species);
   roles.push(`Intimidate: ${intim.join(', ') || 'none'}`);
   L.push(`Roles: ${roles.join(' · ')}`);
-  const megas = filled.filter(s => s.item && dex.items.get(s.item).megaStone).map(s => `${s.species} (${s.item})`);
-  if (megas.length) L.push(`Mega Stones: ${megas.join(', ')} — only one Pokémon can Mega Evolve per battle.`);
   return L;
-}
-
-export function nextStep(draft) {
-  const filled = draft.slots.map((s, i) => [s, i + 1]).filter(([s]) => s);
-  const empty = draft.slots.map((s, i) => (s ? null : i + 1)).filter(Boolean);
-  if (!draft.concept) return 'Step 1 · CONCEPT — call draft_concept with your archetype, speed mode and win condition (2–3 sentences).';
-  if (filled.length < 3) return `Step 2 · CORE — choose your 2–3 core Pokémon: draft_set({slot: ${empty[0]}, species: "…"}). Research with pokemon / search_pokemon as needed.`;
-  if (empty.length) return `Step 3 · FILL — choose species for slot${empty.length > 1 ? 's' : ''} ${empty.join(', ')}. Check the team report for missing roles and shared weaknesses.`;
-  const incomplete = filled.find(([s]) => slotMissing(s).length);
-  if (incomplete) return `Step 4 · SETS — finish slot ${incomplete[1]} (${incomplete[0].species}): ${slotMissing(incomplete[0]).join(', ')}. One draft_set call can set item, ability, nature, sp and moves together.`;
-  return 'Step 5 · LOCK — every slot is complete. Call team_lock with your team_plan (2–4 sentences).';
 }
 
 export function boardText(draft, {lockProblems} = {}) {
@@ -212,15 +195,13 @@ export function boardText(draft, {lockProblems} = {}) {
     if (!s) { L.push(`  ${i + 1} ·  (empty)`); return; }
     const miss = slotMissing(s);
     const spTxt = Object.keys(s.sp).length ? STATS.filter(k => s.sp[k]).map(k => `${s.sp[k]} ${STAT_LABEL[k]}`).join(' / ') : '—';
-    const st = computeStats(toSet(s));
     L.push(`  ${i + 1} ${miss.length ? '…' : '✓'} ${s.species} @ ${s.item || '—'} · ${s.ability || '—'} · ${s.nature || '—'} · SP ${spTxt} · ${s.moves.join(', ') || 'no moves'}`);
-    L.push(`      stats ${STATS.map(k => `${STAT_LABEL[k]} ${st[k]}`).join(' ')}${miss.length ? ` · missing: ${miss.join(', ')}` : ''}`);
+    // Final stats only mean something once the nature and stat points are chosen.
+    if (s.spSet && s.nature) { const st = computeStats(toSet(s)); L.push(`      stats ${STATS.map(k => `${STAT_LABEL[k]} ${st[k]}`).join(' ')}`); }
   });
   const rep = report(draft);
   if (rep.length) L.push('', 'TEAM REPORT', ...rep.map(x => `  ${x}`));
   if (lockProblems?.length) L.push('', 'LOCK REJECTED — fix these:', ...lockProblems.map(p => `  - ${p}`));
-  L.push('', `NEXT → ${nextStep(draft)}`);
-  L.push(`Research used: ${draft.research} of ~${RESEARCH_BUDGET} suggested lookups.${draft.researched?.length ? ` Already looked up: ${draft.researched.join(', ')} (no need to repeat).` : ''}`);
   return L.join('\n');
 }
 

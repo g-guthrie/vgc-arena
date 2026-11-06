@@ -143,12 +143,12 @@ export function megaPreview(battle, pokemon) {
   }
 }
 
-// Effective Speed right now for every stored Speed this species can have:
-// [[stored, effective], ...] ascending. Used to turn move order into bounds.
-export function speedTable(pokemon) {
+// The action Speed the queue would sort by (Trick Room folded in) for every
+// stored Speed this species can have: [[stored, actionSpeed], ...] ascending.
+export function actionSpeedTable(pokemon) {
   const [lo, hi] = statRange(pokemon.species, 'spe');
   const rows = [];
-  for (let s = lo; s <= hi; s++) rows.push([s, withStats(pokemon, {spe: s}, () => effectiveSpeed(pokemon))]);
+  for (let s = lo; s <= hi; s++) rows.push([s, withStats(pokemon, {spe: s}, () => sandboxed(pokemon.battle, 'max', () => pokemon.getActionSpeed()))]);
   return rows;
 }
 

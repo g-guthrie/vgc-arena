@@ -9,9 +9,9 @@ import {Game, describeLines} from './game.mjs';
 import {renderObservation, choiceFromAnswer, predictionEnum} from './observation.mjs';
 import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION, thinkText} from './briefing.mjs';
 import {resolveModel} from './models.mjs';
-import {newDraft, setSlot, clearSlot, boardText, lockCheck, boardSummary} from './draft.mjs';
+import {newDraft, setSlot, boardText, lockCheck, boardSummary} from './draft.mjs';
 import {question, questionText} from './guided.mjs';
-import {speedSnapshot, speedConstraints, applySpeedConstraints} from './speed-infer.mjs';
+import {watchSpeedOrder, applySpeedConstraints} from './speed-infer.mjs';
 
 const RESEARCH_TOOLS = new Set(['search_pokemon', 'pokemon', 'search_moves', 'move', 'search_items', 'item', 'ability', 'calc']);
 
@@ -154,14 +154,6 @@ export class Match extends EventEmitter {
     return {ok: true, notes: r.notes, board: boardText(d.seat.draft)};
   }
 
-  draftClear(token, {slot}) {
-    const d = this.draftSeat(token);
-    if (d.error) return d;
-    const r = clearSlot(d.seat.draft, slot);
-    this.emit('change');
-    return r.error ? {error: r.error, board: boardText(d.seat.draft)} : {ok: true, board: boardText(d.seat.draft)};
-  }
-
   // Guided path: answer the board's current question.
   // The exact legal answer shape for whatever this seat is being asked now,
   // as a JSON schema: constrained clients can only produce legal answers.
@@ -262,11 +254,6 @@ export class Match extends EventEmitter {
     return `${boardText(draft)}\n\n${questionText(question(draft))}`;
   }
 
-  draftView(token) {
-    const side = this.sideOf(token);
-    return {ok: true, board: boardText(this.seats[side].draft)};
-  }
-
   teamLock(token, {team_plan}) {
     const d = this.draftSeat(token);
     if (d.error) return d;
@@ -288,6 +275,7 @@ export class Match extends EventEmitter {
       p1: {name: 'Player 1', sets: this.seats.p1.team.map(s => ({...s}))},
       p2: {name: 'Player 2', sets: this.seats.p2.team.map(s => ({...s}))},
     });
+    watchSpeedOrder(game.battle, cs => applySpeedConstraints(this.speedBounds, cs));
     this.games.push({
       n, seed, game, startedAt: new Date().toISOString(), winner: null, turns: 0,
       preview: {p1: null, p2: null},
@@ -352,11 +340,8 @@ export class Match extends EventEmitter {
     }
     const turnBefore = game.turn;
     const logBefore = game.battle.log.length;
-    const resolves = obs.options.kind === 'move' && !game.needsChoice(other(side));
-    const snap = resolves ? speedSnapshot(game.battle) : null;
     const res = game.choose(side, conv.choice);
     if (!res.ok) return {error: res.error};
-    if (snap) applySpeedConstraints(this.speedBounds, speedConstraints(game.battle, snap));
     const record = {
       kind: obs.options.kind, turn: turnBefore,
       payload: {ids: conv.ids, actions: conv.actions, predictions, reason: typeof payload.reason === 'string' ? clip(payload.reason) : null},
@@ -386,6 +371,7 @@ export class Match extends EventEmitter {
       g.turns = g.game.turn || 0;
       this.score[other(side)]++;
     }
+    this.forfeitedBy = side;
     this.finish(other(side), `${this.seats[side].name} forfeited`);
     return {ok: true};
   }
@@ -489,7 +475,7 @@ export class Match extends EventEmitter {
     else this.score[w]++;
     this.log(`game ${g.n} ${w && w !== 'tie' ? `won by ${this.seats[w].name}` : 'tied'} on turn ${g.game.turn}`);
     const decided = SIDES.find(s => this.score[s] >= this.winsNeeded);
-    if (decided) return this.finish(decided, 'won the set');
+    if (decided) return this.finish(decided, `first to ${this.winsNeeded} game wins`);
     if (this.games.length >= this.bestOf + 2) return this.finish(this.score.p1 > this.score.p2 ? 'p1' : this.score.p2 > this.score.p1 ? 'p2' : 'tie', 'game cap reached');
     this.startGame();
   }
@@ -574,7 +560,9 @@ export class Match extends EventEmitter {
     if (this.phase === 'waiting') return {...base, yourTurn: false, text: 'Waiting for an opponent to join this match. Call arena_wait.'};
     if (this.phase === 'finished') {
       const result = this.winner === 'tie' ? 'The match was a TIE' : this.winner === side ? 'You WON the match' : 'You LOST the match';
-      return {...base, yourTurn: false, finished: true, text: `MATCH FINISHED. ${result} ${this.score[side]}–${this.score[other(side)]} (${this.endReason}). You are done — no further actions.\n\n${this.gameSummaries(side)}`};
+      // Players are anonymous to each other, so a forfeit is told from this seat's side.
+      const why = this.forfeitedBy ? (this.forfeitedBy === side ? 'you forfeited' : 'your opponent forfeited') : this.endReason;
+      return {...base, yourTurn: false, finished: true, text: `MATCH FINISHED. ${result} ${this.score[side]}–${this.score[other(side)]} (${why}). You are done — no further actions.\n\n${this.gameSummaries(side)}`};
     }
     if (!this.yourTurn(side)) return {...base, yourTurn: false, text: `Waiting for your opponent (phase: ${this.phase}${this.phase === 'battle' ? `, game ${this.game.n}, turn ${this.currentGame.turn}` : ''}). Call arena_wait.`};
     const g = this.game;
@@ -600,23 +588,24 @@ export class Match extends EventEmitter {
     return {...base, yourTurn: true, kind: obs.options.kind, turn: this.currentGame.turn, text: obs.text};
   }
 
-  // Re-render without advancing the "since last decision" cursor.
-  peekFor(token) {
-    const side = this.sideOf(token);
-    const g = this.game;
-    return this.stateFor(token);
-  }
-
+  // What a player remembers from finished games: result, what the opponent
+  // brought and did each turn, and how the last game ended from their view.
   gameSummaries(side) {
     const done = this.games.filter(g => g.winner || g.endedAt);
     if (!done.length) return '';
-    const L = ['PREVIOUS GAMES:'];
+    const opp = other(side);
+    const L = [];
+    const last = done.at(-1);
+    const end = last.game.linesFor(side, last.view[side].cursor);
+    const ending = describeLines(end, side);
+    if (ending.length) L.push(`HOW GAME ${last.n} ENDED (since your last decision):`, ...ending.slice(-30).map(l => `  ${l}`), '');
+    L.push('PREVIOUS GAMES:');
     for (const g of done) {
       const res = g.winner === 'tie' || !g.winner ? 'tie' : g.winner === side ? 'you won' : 'you lost';
-      const opp = other(side);
-      const oppLeads = g.game.battle.log.filter(l => new RegExp(`^\\|switch\\|${opp}[ab]:`).test(l)).map(l => l.split('|')[3].split(',')[0]);
-      const oppBrought = [...new Set(oppLeads)];
-      L.push(`  Game ${g.n}: ${res} on turn ${g.game.turn}. They revealed ${oppBrought.join(', ') || 'nothing'}; their leads: ${oppBrought.slice(0, 2).join(' + ')}. You brought ${g.preview[side]?.bring.join(', ')}.`);
+      const log = g.game.linesFor('spectator');
+      const oppSeen = [...new Set(log.filter(l => new RegExp(`^\\|(switch|drag)\\|${opp}[ab]:`).test(l)).map(l => l.split('|')[3].split(',')[0]))];
+      L.push(`  Game ${g.n}: ${res} on turn ${g.game.turn}${g.forfeit ? ` (${g.forfeit === side ? 'you' : 'they'} forfeited)` : ''}. They brought ${oppSeen.join(', ') || 'nothing seen'}, leading ${oppSeen.slice(0, 2).join(' + ')}. You brought ${g.preview[side]?.bring.join(', ')}.`);
+      for (const [turn, acts] of opponentActions(log, opp)) L.push(`    T${turn}: ${acts.join(' · ')}`);
     }
     return L.join('\n');
   }
@@ -729,6 +718,26 @@ function sheetDex(sheet) {
     for (const m of p.moves) { const mv = dex.moves.get(m); moves[mv.name] = {type: mv.type, category: mv.category, bp: mv.basePower || 0}; }
   }
   return {species, moves};
+}
+
+// The opponent's visible actions per turn of a finished game: moves with
+// targets, switches and Mega Evolution, from the public log.
+function opponentActions(log, opp) {
+  const out = [];
+  let turn = 0;
+  let acts = [];
+  const name = ident => ident.split(': ')[1];
+  const flush = () => { if (turn && acts.length) out.push([turn, acts]); acts = []; };
+  for (const line of log) {
+    const p = line.split('|');
+    if (p[1] === 'turn') { flush(); turn = Number(p[2]); continue; }
+    if (!turn || !p[2]?.startsWith(opp)) continue;
+    if (p[1] === 'move' && !/\[from\](?! lockedmove)/.test(line)) acts.push(`${name(p[2])} ${p[3]}${p[4] && !p[4].startsWith(opp) ? ` → ${name(p[4])}` : p[4] && p[4] !== p[2] ? ` → its ally ${name(p[4])}` : ''}`);
+    else if (p[1] === 'switch' || p[1] === 'drag') acts.push(`in: ${p[3].split(',')[0]}`);
+    else if (p[1] === '-mega') acts.push(`${name(p[2])} Mega Evolved`);
+  }
+  flush();
+  return out;
 }
 
 function rangesLine(species) {

@@ -15,6 +15,7 @@ const FIELD_NAMES = {trickroom: 'Trick Room (slower Pokémon move first within a
 const TARGETED = new Set(['normal', 'any', 'adjacentFoe', 'adjacentAlly', 'adjacentAllyOrSelf']);
 
 const pct = n => `${Math.round(n)}%`;
+const turnsLeft = n => `${n} turn${n === 1 ? '' : 's'} left incl. this one`;
 const r1 = n => (Math.round(n * 10) / 10).toFixed(n < 10 ? 1 : 0);
 const boostText = b => Object.entries(b).filter(([, v]) => v).map(([k, v]) => `${STAT_SHORT[k]} ${v > 0 ? '+' : ''}${v}`).join(', ');
 const speciesName = p => (p.illusion ? p.illusion.species.name : p.species.name);
@@ -67,8 +68,8 @@ function sideConditionsText(side) {
 function fieldText(battle) {
   const out = [];
   const f = battle.field;
-  if (f.weather) out.push(`${weatherName(f.weather)}${f.weatherState.duration ? ` (${f.weatherState.duration} turns left incl. this one)` : ''}`);
-  if (f.terrain) out.push(`${dex.conditions.get(f.terrain).name}${f.terrainState.duration ? ` (${f.terrainState.duration} turns left incl. this one)` : ''}`);
+  if (f.weather) out.push(`${weatherName(f.weather)}${f.weatherState.duration ? ` (${turnsLeft(f.weatherState.duration)})` : ''}`);
+  if (f.terrain) out.push(`${dex.conditions.get(f.terrain).name}${f.terrainState.duration ? ` (${turnsLeft(f.terrainState.duration)})` : ''}`);
   for (const [id, state] of Object.entries(f.pseudoWeather)) {
     out.push(`${FIELD_NAMES[id] || dex.conditions.get(id).name || id}${state.duration ? ` — ${state.duration} turn${state.duration === 1 ? '' : 's'} left incl. this one` : ''}`);
   }
@@ -171,9 +172,11 @@ function hitsLine(battle, a, d, moveIds, hidden, hpPct) {
     if (move.target === 'allAdjacent') {
       const mate = a.side.active.find(p => p && p !== a && !p.fainted);
       const ar = mate && damageRange(battle, a, mate, move.id, hidden === 'attacker' ? 'attacker' : null);
-      if (ar && !ar.immune) ally = `, ally takes ${r1(ar.lo)}–${r1(ar.hi)}%`;
+      const own = hidden !== 'attacker';
+      if (ar && !ar.immune) ally = `; ${own ? 'your' : 'their'} ${speciesName(mate)} takes ${r1(ar.lo)}–${r1(ar.hi)}%${own ? ' unless it Protects' : ''}`;
     }
-    return `${move.name}${isSpreadTag(move)} ${r1(r.lo)}–${r1(r.hi)}%${koTag(r, hpPct, d)}${ally}`;
+    const acc = accuracyOf(battle, a, d, move.id);
+    return `${move.name}${spreadTag(move, r)}${acc ? ` (${acc}% acc)` : ''} ${r1(r.lo)}–${r1(r.hi)}%${koTag(r, hpPct, d)}${ally}`;
   });
   if (immune.length) parts.push(`immune to ${immune.join(', ')}`);
   return parts.join(' · ');
@@ -225,7 +228,18 @@ function damageFacts(battle, mine, theirs, oppSheetBySpecies) {
   }
   return {rows, mega};
 }
-const isSpreadTag = m => m.target === 'allAdjacentFoes' ? ' (spread)' : m.target === 'allAdjacent' ? ' (spread, hits ally too)' : '';
+// Spread moves lose 25% when they hit more than one target; say which applies now.
+const spreadTag = (m, r) => (!['allAdjacentFoes', 'allAdjacent'].includes(m.target) ? '' : r.spread ? ' (spread, ×0.75 for 2+ targets)' : ' (spread move, one target now: full power)');
+
+// Accuracy when it is below 100%, after weather (Hurricane / Thunder in rain
+// or sun, Blizzard in snow) and No Guard. Undefined for sure hits.
+function accuracyOf(battle, a, d, moveId) {
+  const move = battle.dex.getActiveMove(moveId);
+  try { move.onModifyMove?.call(battle, move, a, d); } catch {}
+  if (move.accuracy === true || move.accuracy >= 100) return undefined;
+  if ([a, d].some(p => toID(p.ability) === 'noguard')) return undefined;
+  return move.accuracy;
+}
 
 // ---------------------------------------------------------------- legal options
 export function legalOptions(game, sideId) {
@@ -307,7 +321,7 @@ export function actionMenu(game, sideId, options = legalOptions(game, sideId)) {
     }
     for (const x of s.switches || []) add(`switch → ${x.species}`, `switch ${x.index}`, {slot: s.slot, switch: x.species, index: x.index}, 'switch', x.species);
     if (shortage) add('stay empty', 'pass', {slot: s.slot, pass: true}, 'stay empty', '');
-    slots.push({slot: s.slot, species: s.species, trapped: !!s.trapped, canMega: !!s.canMega, options: opts});
+    slots.push({slot: s.slot, species: s.species, trapped: !!s.trapped, canMega: !!s.canMega, pivot: !!s.pivot, replace: options.kind === 'switch' && !s.pivot, options: opts});
   }
   const predict = options.kind === 'move'
     ? liveFoes.map(i => ({foe: `foe${i}`, species: speciesName(foes[i - 1])}))
@@ -379,7 +393,8 @@ export function turnSchema(menu, sheetFor) {
 function menuText(menu, sheetFor) {
   const L = ['', 'YOUR OPTIONS:'];
   for (const s of menu.slots) {
-    L.push(`  slot${s.slot} ${s.species}${s.trapped ? ' (trapped)' : ''}${s.canMega ? ' — can Mega Evolve' : ''}:`);
+    const label = s.replace ? `(${s.species || 'empty'} fainted) — send in` : s.pivot ? `(${s.species} is leaving) — send in` : `${s.species}${s.trapped ? ' (trapped)' : ''}${s.canMega ? ' — can Mega Evolve' : ''}`;
+    L.push(`  slot${s.slot} ${label}:`);
     const groups = [];
     for (const o of s.options) {
       const g = groups.find(x => x.name === o.group) || (groups.push({name: o.group, opts: []}), groups.at(-1));
@@ -415,7 +430,8 @@ export function renderObservation(game, sideId, ctx) {
   const mine = me.active.filter(p => p && !p.fainted);
   const theirs = opp.active.filter(p => p && !p.fainted);
   const L = [];
-  L.push(`=== ${ctx.header} · Turn ${battle.turn} ===`);
+  const when = options.kind !== 'switch' ? `Turn ${battle.turn}` : options.slots.some(s => s.pivot) ? `Turn ${battle.turn}, mid-turn` : `End of turn ${battle.turn}`;
+  L.push(`=== ${ctx.header} · ${when} ===`);
   if (options.kind === 'switch') {
     const pivot = options.slots.some(s => s.pivot);
     L.push(pivot

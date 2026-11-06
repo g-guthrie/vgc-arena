@@ -145,9 +145,11 @@ You submit `bring` (4 Pokémon, first two lead) and `game_plan`.
 - **damage**: the two strongest hits each way per pair, with KO flags, computed by the simulator across every legal opponent spread (Focus Sash and Sturdy are flagged); anything else is one `calc` call away;
 - **if it Mega Evolves**: the same numbers, Speed and weather for a Mega-capable active's Mega form;
 - for switches, every option's matchup against their actives (best hit each way, Speed order). A mid-turn pivot (U-turn, Parting Shot, Eject Button) is labeled as such, since the incoming Pokémon still takes this turn's hits;
-- status counters a player could keep (turns asleep, Toxic stage) and each foe's last move;
+- status counters a player could keep (turns asleep, Toxic stage) and each foe's last move; accuracy on any move below 100% (weather applied), and whether a spread move currently hits one target or two;
 - **WEIGH BEFORE ANSWERING**: a short list of judgments for this kind of decision (move turn, replacement, pivot; every teambuilding question and team preview has its own). Players weigh them; they don't write about them;
 - **YOUR OPTIONS**: every legal action with a short ID, grouped by move, and an example answer.
+
+From game 2 on, team preview starts with how the last game ended and, for every finished game, what the opponent brought and did each turn (moves with targets, switches, Mega Evolution).
 
 **The answer** is the same shape every turn: `predictions` first (each foe's sheet move or "switch", with confidence, so the read is committed before the move), `actions` (one option ID per slot), `mega` (the slot that Mega Evolves, or null) and an optional one-sentence `reason`. Replacements after a faint take only `actions`. The text menu, the JSON schema (`decision_schema`) and the parser are built from one menu, so an answer is either an exact option or a rejection that lists the options.
 

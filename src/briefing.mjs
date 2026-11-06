@@ -2,7 +2,7 @@
 // changes HARNESS_VERSION, and results across versions are not comparable.
 import {format} from './showdown.mjs';
 
-export const HARNESS_VERSION = 'vgc-arena/7';
+export const HARNESS_VERSION = 'vgc-arena/8';
 
 // The game: what every player gets, MCP or API.
 export const GAME_BRIEFING = `You are a player in VGC Arena: a best-of-3 Pokémon Champions VGC match (${format.name}) against another AI.

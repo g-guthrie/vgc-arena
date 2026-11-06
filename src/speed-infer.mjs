@@ -1,86 +1,42 @@
-// Narrow hidden Speed from public move order. Before a turn resolves we snapshot
-// every active Pokémon's effective Speed as a function of its stored Speed; after
-// it resolves, each pair from opposite sides that moved in the same priority
-// bracket — before anything changed speed or turn order — bounds the stored Speed
-// of each one relative to the other's exact value. Ties are random, so bounds
-// are inclusive. Everything used here is public: move order, the open sheet.
+// Narrow hidden Speed from public move order. The simulator sorts its action
+// queue by (order, priority, fractional priority, action Speed) and re-sorts
+// after every action, so when a move is about to run, every move still queued
+// in the same bracket from the other side is no faster than it (Speed ties are
+// random, so bounds are inclusive; Trick Room is already folded into action
+// Speed). From that public order, each side bounds the other's stored Speed
+// relative to its own exact value. Only the order is used, never the hidden
+// numbers: each bound comes from the viewer's own Speed and the open sheet.
 import {toID} from './showdown.mjs';
-import {effectiveSpeed, speedTable} from './calc.mjs';
-import {channel} from './game.mjs';
-import {priorityOf} from './observation.mjs';
+import {actionSpeedTable} from './calc.mjs';
 
-// Items and abilities that reorder within a bracket regardless of Speed.
-const ORDER_ITEMS = new Set(['laggingtail', 'fullincense', 'quickclaw', 'custapberry']);
-const ORDER_ABILITIES = new Set(['stall', 'myceliummight', 'quickdraw']);
-// Protocol lines after which order no longer reflects the snapshot (gen 9
-// re-sorts the queue whenever Speed changes).
-const CUTOFF = new Set(['-setboost', '-clearallboost', '-clearboost', '-clearnegativeboost', '-clearpositiveboost', '-swapboost',
-  '-copyboost', '-invertboost', '-curestatus', '-cureteam', '-sidestart', '-sideend', '-fieldstart', '-fieldend', '-weather',
-  '-item', '-enditem', '-ability', '-endability', '-transform', '-formechange']);
-const CUTOFF_TEXT = /Quick Claw|Quick Draw|After You|Quash|Instruct|Encore|Protosynthesis|Quark Drive|Slow Start|Unburden/i;
-
-const posOf = ident => {
-  const m = /^(p[12])([ab]):/.exec(ident || '');
-  return m ? `${m[1]}${m[2]}` : null;
-};
-
-export function speedSnapshot(battle) {
-  if (battle.sides.some(s => s.pokemon.some(p => toID(p.baseAbility) === 'illusion'))) return null;
-  const tr = !!battle.field.pseudoWeather.trickroom;
-  const mons = {};
-  for (const side of battle.sides) {
-    side.active.forEach((p, i) => {
-      if (!p || p.fainted) return;
-      if (ORDER_ITEMS.has(toID(p.item)) || ORDER_ABILITIES.has(toID(p.ability))) return;
-      mons[`${side.id}${'ab'[i]}`] = {
-        side: side.id, key: toID(p.species.name), exact: effectiveSpeed(p), table: speedTable(p),
-        priority: Object.fromEntries(p.moveSlots.map(m => [m.id, priorityOf(p, m.id)])),
-      };
-    });
-  }
-  return {tr, mons, logLen: battle.log.length};
-}
-
-// Returns constraints [{side, key, lo?, hi?}] on stored Speed.
-export function speedConstraints(battle, snap) {
-  if (!snap) return [];
-  const order = [];
-  const dead = new Set();
-  for (const line of channel(battle.log.slice(snap.logLen), 'spectator')) {
-    const parts = line.split('|');
-    const type = parts[1];
-    if (type === 'turn' || type === 'upkeep') break;
-    if (CUTOFF.has(type) || CUTOFF_TEXT.test(line)) break;
-    if ((type === '-boost' || type === '-unboost') && parts[3] === 'spe') break;
-    if (type === '-status' && parts[3] === 'par') break;
-    if (['switch', 'drag', 'replace', 'detailschange', '-mega', 'faint'].includes(type)) { const pos = posOf(parts[2]); if (pos) dead.add(pos); continue; }
-    if (type !== 'move' || line.includes('[from]')) continue;
-    const pos = posOf(parts[2]);
-    if (!pos || dead.has(pos) || !snap.mons[pos]) continue;
-    const mon = snap.mons[pos];
-    const pr = mon.priority[toID(parts[3])];
-    if (pr === undefined) continue;
-    if (!order.some(o => o.pos === pos)) order.push({pos, mon, pr});
-  }
-  const out = [];
-  for (let i = 0; i < order.length; i++) {
-    for (let j = i + 1; j < order.length; j++) {
-      const first = order[i], second = order[j];
-      if (first.pr !== second.pr || first.mon.side === second.mon.side) continue;
-      // Without Trick Room the first mover is at least as fast; with it, at most.
-      const firstFaster = !snap.tr;
-      out.push(bound(first.mon, second.mon.exact, firstFaster ? 'atLeast' : 'atMost'));
-      out.push(bound(second.mon, first.mon.exact, firstFaster ? 'atMost' : 'atLeast'));
+export function watchSpeedOrder(battle, onConstraints) {
+  // Under Illusion the visible species may not be the real one: infer nothing.
+  if (battle.sides.some(s => s.pokemon.some(p => toID(p.baseAbility) === 'illusion'))) return;
+  let reorderedTurn = 0;
+  // After You, Instruct, Round, Pledges: something jumped the queue this turn.
+  const prioritize = battle.queue.prioritizeAction.bind(battle.queue);
+  battle.queue.prioritizeAction = (...args) => { reorderedTurn = battle.turn; return prioritize(...args); };
+  const run = battle.runAction.bind(battle);
+  battle.runAction = action => {
+    if (action.choice === 'move' && reorderedTurn !== battle.turn && action.pokemon && !action.pokemon.fainted) {
+      const out = [];
+      for (const q of battle.queue.list) {
+        if (q.choice !== 'move' || !q.pokemon || q.pokemon.fainted || q.pokemon.side === action.pokemon.side) continue;
+        if (q.order !== action.order || q.priority !== action.priority || q.fractionalPriority !== action.fractionalPriority) continue;
+        out.push(bound(q.pokemon, action.speed, 'atMost'), bound(action.pokemon, q.speed, 'atLeast'));
+      }
+      if (out.length) onConstraints(out.filter(Boolean));
     }
-  }
-  return out.filter(Boolean);
+    return run(action);
+  };
 }
 
-// The stored Speeds of `mon` whose effective Speed is ≥ / ≤ `ref`.
+// The stored Speeds of `mon` whose action Speed is ≤ / ≥ `ref`.
 function bound(mon, ref, dir) {
-  const ok = mon.table.filter(([, eff]) => (dir === 'atLeast' ? eff >= ref : eff <= ref)).map(([s]) => s);
+  const ok = actionSpeedTable(mon).filter(([, v]) => (dir === 'atLeast' ? v >= ref : v <= ref)).map(([s]) => s);
   if (!ok.length) return null;
-  return dir === 'atLeast' ? {side: mon.side, key: mon.key, lo: ok[0]} : {side: mon.side, key: mon.key, hi: ok.at(-1)};
+  const key = toID(mon.species.name);
+  return dir === 'atLeast' ? {side: mon.side.id, key, lo: ok[0]} : {side: mon.side.id, key, hi: ok.at(-1)};
 }
 
 // Fold constraints into bounds {side: {key: {lo, hi}}}, ignoring any that
