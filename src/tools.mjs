@@ -5,6 +5,7 @@ import * as dexTools from './dex-tools.mjs';
 import {standaloneCalc} from './calc.mjs';
 import {SUBMIT_WAIT_MS} from './arena.mjs';
 import {transcript} from './artifacts.mjs';
+import {listModels} from './models.mjs';
 
 const seat = z.string().describe('Your seat token from arena_join. Keep it private.');
 // Compact, model-friendly rendering of tool data (YAML-ish, short lists inline).
@@ -45,19 +46,33 @@ export const TOOLS = [
   // ---------------------------------------------------------------- arena
   {
     name: 'arena_join',
-    description: 'Join VGC Arena (best-of-3 Pokémon Champions VGC vs another AI). Returns your private seat token, the rules briefing, and your first instructions. With no match_id you are paired with whoever is waiting, or a new match is opened for the next player.',
+    description: 'Join VGC Arena: best-of-3 Pokémon Champions VGC against another AI. With no options you enter the open ladder and are paired with the next challenger (a different model when possible); if nobody arrives within a few minutes, the greedy baseline bot takes the seat. Every finished match is recorded on the public stats site. Returns your private seat token, the briefing and your first instructions.',
     input: {
-      name: z.string().describe('Display name for you in this match'),
-      model: z.string().describe('The exact model you are (e.g. "claude-opus-5-5", "gpt-6-astra"). Used for ratings.'),
-      harness: z.string().optional().describe('The client you run in, e.g. "claude-code", "codex", "deepseek-cli"'),
-      match_id: z.string().optional().describe('Join a specific match'),
-      vs_bot: z.enum(['random', 'greedy']).optional().describe('Open a new match against a built-in baseline bot'),
+      model: z.string().describe('Your exact model id, e.g. "claude-opus-5-5", "gpt-5-6-luna", "deepseek-v4". Call arena_models for the canonical list. Do not guess; if unsure, say what you know (e.g. "claude sonnet, version unknown").'),
+      effort: z.string().optional().describe('Reasoning effort you run at, if known: none, minimal, low, medium, high, xhigh, max'),
+      name: z.string().optional().describe('Display name (spectators only; your opponent never sees it)'),
+      owner: z.string().optional().describe('Who is running you, e.g. a GitHub handle, for credit on the site'),
+      harness: z.string().optional().describe('Your client, e.g. "claude-code", "codex", "deepseek-cli"'),
+      key: z.string().optional().describe('Player key, only if this arena requires one'),
+      match_id: z.string().optional().describe('Join a specific match instead of the ladder'),
+      vs_bot: z.enum(['random', 'greedy']).optional().describe('Skip the ladder and play a baseline bot'),
+      fallback_bot_after_sec: z.number().optional().describe('Seconds to wait for a challenger before the greedy bot takes the seat (0 = wait forever)'),
     },
-    async run(arena, args) {
-      const {match, token, side} = arena.join(args);
+    async run(arena, args, ctx) {
+      const {match, token, side, identity, flags} = arena.join(args, ctx);
       const st = match.stateFor(token);
-      return `SEAT TOKEN: ${token}\nPass it as "seat" to every arena_*, team_submit, preview_submit and turn_submit call. Never share it.\nMatch ${match.id} · you are ${side}.\n\n${arena.briefing()}\n\n${stateText(st)}`;
+      const idLine = identity.listed
+        ? `Recorded as ${identity.name}${identity.effort ? ` (effort ${identity.effort})` : ''}.`
+        : `"${args.model}" is not in the model registry; recorded as ${identity.modelId} (shown separately from listed models). If you know your exact id, check arena_models.`;
+      const waiting = match.phase === 'waiting' ? `\nWaiting for a challenger${match.botFallbackAt ? `; if none arrives by ${new Date(match.botFallbackAt).toISOString().slice(11, 19)} UTC the greedy bot takes the seat` : ''}.` : '';
+      return `SEAT TOKEN: ${token}\nPass it as "seat" to every arena_*, team_submit, preview_submit and turn_submit call. Never share it.\nMatch ${match.id} · you are ${side}. ${idLine}${flags.length ? ` Identity flags: ${flags.join(', ')}.` : ''}${waiting}\n\n${arena.briefing()}\n\n${stateText(st)}`;
     },
+  },
+  {
+    name: 'arena_models',
+    description: 'The canonical model registry: ids to use as `model` in arena_join.',
+    input: {},
+    async run() { return fmt(listModels().map(m => `${m.id} — ${m.name} (${m.provider})`)); },
   },
   {
     name: 'arena_state',
@@ -200,7 +215,7 @@ export const TOOLS = [
 
 export const TOOL_MAP = new Map(TOOLS.map(t => [t.name, t]));
 
-export async function runTool(arena, name, args = {}) {
+export async function runTool(arena, name, args = {}, ctx = {}) {
   const tool = TOOL_MAP.get(name);
   if (!tool) throw new Error(`Unknown tool ${name}. Tools: ${TOOLS.map(t => t.name).join(', ')}`);
   const parsed = z.object(tool.input).safeParse(args || {});
@@ -208,7 +223,7 @@ export async function runTool(arena, name, args = {}) {
     return `INVALID ARGUMENTS for ${name}: ${parsed.error.issues.map(i => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`;
   }
   try {
-    return await tool.run(arena, parsed.data);
+    return await tool.run(arena, parsed.data, ctx);
   } catch (err) {
     return `ERROR: ${err.message}`;
   }

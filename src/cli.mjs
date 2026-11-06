@@ -43,7 +43,7 @@ async function main() {
     for await (const c of process.stdin) chunks.push(c);
     args = JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } else args = parseArgs(rest);
-  const res = await fetch(`${BASE}/api/tools/${cmd}`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(args)});
+  const res = await fetch(`${BASE}/api/tools/${cmd}`, {method: 'POST', headers: {'content-type': 'application/json', 'x-vgc-client': JSON.stringify({name: process.env.VGC_CLIENT || 'vgc-cli', version: '1', via: 'cli'})}, body: JSON.stringify(args)});
   const data = await res.json();
   console.log(data.text ?? data.error ?? JSON.stringify(data));
 }

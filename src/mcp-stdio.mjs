@@ -7,10 +7,14 @@ import {buildMcpServer} from './mcp-server.mjs';
 
 const BASE = (process.env.VGC_ARENA_URL || 'http://127.0.0.1:3170').replace(/\/$/, '');
 
-async function call(name, args) {
+// The MCP client (Claude Code, Codex, …) identifies itself at initialize;
+// forward that so the arena can cross-check the self-reported model.
+async function call(name, args, clientInfo) {
   try {
     const res = await fetch(`${BASE}/api/tools/${name}`, {
-      method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(args || {}),
+      method: 'POST',
+      headers: {'content-type': 'application/json', 'x-vgc-client': JSON.stringify({name: clientInfo?.name || '', version: clientInfo?.version || '', via: 'mcp-stdio'})},
+      body: JSON.stringify(args || {}),
     });
     const data = await res.json();
     return data.text ?? data.error ?? JSON.stringify(data);

@@ -8,6 +8,7 @@ import {validateTeam, openSheet, openSheetText, exportTeam, parseTeam} from './d
 import {Game, describeLines} from './game.mjs';
 import {renderObservation, legalOptions, toShowdownChoice, REQUIRED_FIELDS} from './observation.mjs';
 import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION} from './briefing.mjs';
+import {resolveModel} from './models.mjs';
 
 const MAX_FIELD = 700;
 const SIDES = ['p1', 'p2'];
@@ -49,16 +50,21 @@ export class Match extends EventEmitter {
   get currentGame() { return this.game?.game || null; }
 
   // ------------------------------------------------------------ seats
-  join({name, model, harness}) {
+  // identity: from models.resolveModel; client: what the transport reported.
+  join({name, model: modelRaw, identity, harness, client, owner, ownerVerified, flags, detectedHarness}) {
+    identity ||= resolveModel(modelRaw);
     const side = SIDES.find(s => !this.seats[s]);
     if (!side) throw new Error('Match is full.');
     const token = `seat_${crypto.randomBytes(18).toString('base64url')}`;
+    const model = identity?.modelId || 'unlisted:unknown';
     this.seats[side] = {
-      token, side, name: clip(String(name || model || side)).slice(0, 40), model: String(model || 'unknown').slice(0, 80),
-      harness: String(harness || '').slice(0, 80), joinedAt: new Date().toISOString(),
+      token, side, name: String(name || identity?.name || side).slice(0, 40), model, identity,
+      harness: String(harness || detectedHarness || '').slice(0, 80), client: client || {}, detectedHarness: detectedHarness || null,
+      owner: String(owner || '').slice(0, 60), ownerVerified: !!ownerVerified, flags: flags || [],
+      joinedAt: new Date().toISOString(), waitingSince: Date.now(),
       team: null, teamText: null, teamPlan: null, sheet: null, teamAttempts: 0,
     };
-    this.log(`${this.seats[side].name} (${this.seats[side].model}) joined as ${side}`);
+    this.log(`${this.seats[side].name} (${model}${identity?.effort ? `:${identity.effort}` : ''}) joined as ${side}`);
     if (this.seats.p1 && this.seats.p2) this.startTeambuilding();
     return {token, side};
   }
@@ -114,8 +120,8 @@ export class Match extends EventEmitter {
     const seed = gameSeed(this.seed, n);
     const game = new Game({
       seed,
-      p1: {name: this.seats.p1.name, sets: this.seats.p1.team.map(s => ({...s}))},
-      p2: {name: this.seats.p2.name, sets: this.seats.p2.team.map(s => ({...s}))},
+      p1: {name: 'Player 1', sets: this.seats.p1.team.map(s => ({...s}))},
+      p2: {name: 'Player 2', sets: this.seats.p2.team.map(s => ({...s}))},
     });
     this.games.push({
       n, seed, game, startedAt: new Date().toISOString(), winner: null, turns: 0,
@@ -311,7 +317,7 @@ export class Match extends EventEmitter {
 
   header(side) {
     const opp = this.seats[other(side)];
-    return `Game ${this.game.n} (best of ${this.bestOf}) · Set score you ${this.score[side]}–${this.score[other(side)]} vs ${opp.name}`;
+    return `Game ${this.game.n} (best of ${this.bestOf}) · Set score you ${this.score[side]}–${this.score[other(side)]}`;
   }
 
   observe(side) {
@@ -382,11 +388,11 @@ export class Match extends EventEmitter {
       const result = this.winner === 'tie' ? 'The match was a TIE' : this.winner === side ? 'You WON the match' : 'You LOST the match';
       return {...base, yourTurn: false, finished: true, text: `MATCH FINISHED. ${result} ${this.score[side]}–${this.score[other(side)]} (${this.endReason}). You are done — no further actions.\n\n${this.gameSummaries(side)}`};
     }
-    if (!this.yourTurn(side)) return {...base, yourTurn: false, text: `Waiting for ${opp.name} (phase: ${this.phase}${this.phase === 'battle' ? `, game ${this.game.n}, turn ${this.currentGame.turn}` : ''}). Call arena_wait.`};
+    if (!this.yourTurn(side)) return {...base, yourTurn: false, text: `Waiting for your opponent (phase: ${this.phase}${this.phase === 'battle' ? `, game ${this.game.n}, turn ${this.currentGame.turn}` : ''}). Call arena_wait.`};
     const g = this.game;
     if (g?.view) g.view[side].promptedAt ||= Date.now();
     if (this.phase === 'teambuilding') {
-      return {...base, yourTurn: true, kind: 'teambuilding', text: `${TEAMBUILD_TEXT}\n\nYour opponent: ${opp.name} (${opp.model}). You will see their team sheet at team preview.`};
+      return {...base, yourTurn: true, kind: 'teambuilding', text: `${TEAMBUILD_TEXT}\n\nYour opponent is anonymous to you (and you to them). You will see their team sheet at team preview.`};
     }
     if (this.phase === 'preview') {
       const L = [];
@@ -394,7 +400,7 @@ export class Match extends EventEmitter {
       if (g.n > 1) L.push('', this.gameSummaries(side));
       L.push('', 'YOUR TEAM (full sets):', seat.teamText.trim());
       L.push('', `YOUR TEAM PLAN: ${seat.teamPlan}`);
-      L.push('', `OPPONENT'S OPEN TEAM SHEET (${opp.name}):`, openSheetText(opp.sheet));
+      L.push('', `OPPONENT'S OPEN TEAM SHEET:`, openSheetText(opp.sheet));
       L.push('', 'Opponent stat ranges at level 50 (any legal spread):');
       for (const s of opp.sheet) L.push(`  ${s.species}: ${rangesLine(s.species)}`);
       L.push('', `preview_submit fields:
@@ -440,7 +446,7 @@ export class Match extends EventEmitter {
     return {
       id: this.id, label: this.label, phase: this.phase, createdAt: this.createdAt, finishedAt: this.finishedAt,
       format: FORMAT_ID, bestOf: this.bestOf, score: this.score, winner: this.winner, endReason: this.endReason,
-      players: SIDES.map(s => this.seats[s] ? {side: s, name: this.seats[s].name, model: this.seats[s].model, harness: this.seats[s].harness, teamSubmitted: !!this.seats[s].team} : null),
+      players: SIDES.map(s => this.seats[s] ? {side: s, name: this.seats[s].name, model: this.seats[s].model, modelName: this.seats[s].identity?.name, effort: this.seats[s].identity?.effort || null, provider: this.seats[s].identity?.provider, owner: this.seats[s].owner, harness: this.seats[s].harness, flags: this.seats[s].flags, teamSubmitted: !!this.seats[s].team} : null),
       sheets: showTeams ? {p1: this.seats.p1.sheet, p2: this.seats.p2.sheet} : null,
       games: this.games.map(g => ({
         n: g.n, winner: g.winner, turn: g.game.turn, endedAt: g.endedAt || null,
@@ -468,7 +474,8 @@ export class Match extends EventEmitter {
       fixedTeams: this.fixedTeams ? {source: this.fixedTeams.source || null} : null,
       winner: this.winner, endReason: this.endReason, score: this.score,
       players: Object.fromEntries(SIDES.map(s => [s, this.seats[s] && {
-        name: this.seats[s].name, model: this.seats[s].model, harness: this.seats[s].harness,
+        name: this.seats[s].name, model: this.seats[s].model, identity: this.seats[s].identity, owner: this.seats[s].owner,
+        client: this.seats[s].client, detectedHarness: this.seats[s].detectedHarness, flags: this.seats[s].flags, harness: this.seats[s].harness,
         teamText: this.seats[s].teamText, teamPlan: this.seats[s].teamPlan, teamHash: this.seats[s].teamHash, teamAttempts: this.seats[s].teamAttempts,
       }])),
       games: this.games.map(g => ({n: g.n, seed: g.seed, winner: g.winner, turns: g.game.turn, startedAt: g.startedAt, endedAt: g.endedAt, preview: g.preview, spectatorLog: g.spectatorLog, omniscientLog: g.omniscientLog})),

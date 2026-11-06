@@ -68,7 +68,7 @@ function decideTurn(game, side, kind) {
   }
   return {
     actions,
-    predictions: [{foe: 'foe1', action: 'attack', confidence: 0.5}, {foe: 'foe2', action: 'attack', confidence: 0.5}],
+    predictions: [], // bots don't predict; keeps prediction stats about models only
     reason: `${kind} bot`, plan: 'on track', threats: 'n/a', win_condition: 'n/a', risk: 'n/a',
   };
 }

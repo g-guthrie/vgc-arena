@@ -1,0 +1,29 @@
+{
+  "_comment": "Canonical model registry. Players name themselves with an id or alias; anything not listed is recorded as unlisted:<name> and kept off the main leaderboard. Add models here as they ship.",
+  "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+  "models": [
+    {"id": "claude-fable-5-1", "name": "Claude Fable 5.1", "provider": "anthropic", "aliases": ["fable 5.1", "claude fable 5.1", "fable-5.1"]},
+    {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "provider": "anthropic", "aliases": ["opus 5.5", "claude opus 5.5", "opus-5.5"]},
+    {"id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "provider": "anthropic", "aliases": ["sonnet 5.5", "claude sonnet 5.5", "sonnet-5.5"]},
+    {"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "provider": "anthropic", "aliases": ["haiku 5.5", "claude haiku 5.5", "haiku-5.5"]},
+    {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "provider": "anthropic", "aliases": ["opus 4.6", "claude opus 4.6"]},
+    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "provider": "anthropic", "aliases": ["sonnet 4.6", "claude sonnet 4.6", "anthropic/claude-sonnet-4.6"]},
+    {"id": "gpt-6-astra", "name": "GPT-6 Astra", "provider": "openai", "aliases": ["gpt6 astra", "gpt-6 astra", "astra"]},
+    {"id": "gpt-6-1", "name": "GPT-6.1", "provider": "openai", "aliases": ["gpt 6.1", "gpt-6.1", "openai/gpt-6.1"]},
+    {"id": "gpt-5-6-sol", "name": "GPT-5.6 Sol", "provider": "openai", "aliases": ["gpt-5.6-sol", "gpt 5.6 sol", "openai/gpt-5.6-sol"]},
+    {"id": "gpt-5-6-terra", "name": "GPT-5.6 Terra", "provider": "openai", "aliases": ["gpt-5.6-terra", "gpt 5.6 terra", "openai/gpt-5.6-terra"]},
+    {"id": "gpt-5-6-luna", "name": "GPT-5.6 Luna", "provider": "openai", "aliases": ["gpt-5.6-luna", "gpt 5.6 luna", "openai/gpt-5.6-luna"]},
+    {"id": "gpt-5-5", "name": "GPT-5.5", "provider": "openai", "aliases": ["gpt-5.5", "gpt 5.5", "openai/gpt-5.5"]},
+    {"id": "gpt-5-4", "name": "GPT-5.4", "provider": "openai", "aliases": ["gpt-5.4", "gpt 5.4"]},
+    {"id": "deepseek-v4", "name": "DeepSeek V4", "provider": "deepseek", "aliases": ["deepseek v4", "deepseek-v4", "deepseek/deepseek-v4"]},
+    {"id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash", "provider": "deepseek", "aliases": ["deepseek v4 flash", "deepseek/deepseek-v4-flash"]},
+    {"id": "kimi-k2-6", "name": "Kimi K2.6", "provider": "moonshot", "aliases": ["kimi k2.6", "kimi-k2.6", "moonshotai/kimi-k2.6"]},
+    {"id": "builtin:greedy", "name": "Greedy bot", "provider": "arena", "aliases": []},
+    {"id": "builtin:random", "name": "Random bot", "provider": "arena", "aliases": []}
+  ],
+  "harnesses": {
+    "claude-code": {"providers": ["anthropic"], "match": ["claude-code", "claude code"]},
+    "codex": {"providers": ["openai"], "match": ["codex"]},
+    "gemini-cli": {"providers": ["google"], "match": ["gemini"]}
+  }
+}

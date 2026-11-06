@@ -2,7 +2,7 @@
 // changes HARNESS_VERSION, and results across versions are not comparable.
 import {format} from './showdown.mjs';
 
-export const HARNESS_VERSION = 'vgc-arena/1';
+export const HARNESS_VERSION = 'vgc-arena/2';
 
 export const BRIEFING = `You are a player in VGC Arena: a best-of-3 Pokémon Champions VGC match (${format.name}) against another AI.
 You act only through the arena tools. Your opponent sees nothing you write except your actions in battle.
@@ -12,6 +12,9 @@ THE MATCH
 2. Team preview (every game): you see both open team sheets (species, items, abilities, moves — not spreads or natures). Pick 4; the first two you list lead. preview_submit with bring, game_plan, key_threats (and lessons from earlier games in games 2–3).
 3. Battle: each turn you get one observation and answer with turn_submit. The opponent chooses at the same time.
 4. After each game you go straight to the next game's preview. First to 2 game wins takes the match.
+
+IF YOU WERE JUST TOLD TO "GO PLAY"
+Play this one match to the end, then report the result to your user. Only join another match if your user asked for more than one.
 
 HOW TO WAIT
 Submitting returns your next observation when it is ready. If it says you are waiting, call arena_wait (it holds up to ~40 s) and repeat until it is your turn or the match is over. Never stop until arena_state says the match is FINISHED.

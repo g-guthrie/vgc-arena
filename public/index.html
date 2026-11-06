@@ -4,94 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VGC Arena</title>
-<style>
-:root { --bg:#f6f5f2; --panel:#fff; --ink:#1d1d1f; --muted:#6b6b70; --line:#e2e0da; --accent:#2f6fde; --win:#1f8a4c; --loss:#c23b3b; }
-@media (prefers-color-scheme: dark) { :root { --bg:#141416; --panel:#1d1d21; --ink:#ececf0; --muted:#9a9aa3; --line:#2e2e34; --accent:#7aa7ff; --win:#4cc27e; --loss:#ff7a7a; } }
-* { box-sizing: border-box; }
-body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
-header { padding:16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
-header h1 { font-size:18px; margin:0; }
-header .meta { color:var(--muted); font-size:12px; }
-main { display:grid; grid-template-columns: 300px 1fr; gap:16px; padding:16px; max-width:1400px; margin:0 auto; }
-@media (max-width: 800px) { main { grid-template-columns: 1fr; } }
-.panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; min-width:0; }
-.list button { display:block; width:100%; text-align:left; background:none; border:0; border-bottom:1px solid var(--line); padding:8px 4px; color:inherit; cursor:pointer; font:inherit; }
-.list button.sel { background:color-mix(in srgb, var(--accent) 12%, transparent); }
-.small { color:var(--muted); font-size:12px; }
-h2 { font-size:16px; margin:0 0 8px; } h3 { font-size:14px; margin:14px 0 6px; }
-.sheets { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-@media (max-width: 800px) { .sheets { grid-template-columns:1fr; } }
-.sheet div { padding:3px 0; border-bottom:1px dashed var(--line); font-size:13px; }
-pre { white-space:pre-wrap; word-break:break-word; font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; margin:0; max-height:420px; overflow:auto; background:color-mix(in srgb, var(--ink) 4%, transparent); padding:8px; border-radius:6px; }
-.tabs { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
-.tabs button { border:1px solid var(--line); background:var(--panel); color:inherit; border-radius:999px; padding:3px 10px; cursor:pointer; font:inherit; }
-.tabs button.sel { border-color:var(--accent); color:var(--accent); }
-.win { color:var(--win); } .loss { color:var(--loss); }
-.decision { border-top:1px solid var(--line); padding:6px 0; font-size:13px; }
-.decision b { font-weight:600; }
-a { color:var(--accent); }
-</style>
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header><h1>VGC Arena</h1><span class="meta" id="info"></span></header>
-<main>
-  <section class="panel"><h2>Matches</h2><div class="list" id="list"><span class="small">No matches yet.</span></div></section>
-  <section class="panel" id="detail"><span class="small">Select a match. Hidden information (spreads, reasoning) is revealed only after a match finishes.</span></section>
-</main>
-<script>
-let selected = new URLSearchParams(location.search).get('m');
-let gameTab = null;
-const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-async function j(u) { const r = await fetch(u); return r.json(); }
-async function refresh() {
-  try {
-    const info = await j('/api/info');
-    document.getElementById('info').textContent = `${info.harness} · ${info.format} · showdown ${info.showdownCommit.slice(0, 10)}`;
-    const list = await j('/api/matches');
-    const el = document.getElementById('list');
-    if (list.length) el.innerHTML = list.map(m => `<button class="${m.id === selected ? 'sel' : ''}" data-id="${m.id}">
-      <div>${m.players.map(p => p ? esc(p.model) : '…').join(' vs ')}</div>
-      <div class="small">${esc(m.phase)} · ${m.score.p1}–${m.score.p2}${m.game ? ` · game ${m.game} turn ${m.turn}` : ''}${m.label ? ` · ${esc(m.label)}` : ''}</div></button>`).join('');
-    el.querySelectorAll('button').forEach(b => b.onclick = () => { selected = b.dataset.id; gameTab = null; history.replaceState(null, '', `?m=${selected}`); refresh(); });
-    if (selected) renderMatch(await j(`/api/matches/${selected}`));
-  } catch (e) { console.error(e); }
-}
-function renderMatch(m) {
-  if (m.error) return;
-  const d = document.getElementById('detail');
-  const name = s => { const p = m.players.find(x => x && x.side === s); return p ? `${esc(p.name)} <span class="small">(${esc(p.model)}${p.harness ? `, ${esc(p.harness)}` : ''})</span>` : '—'; };
-  const result = m.phase === 'finished' ? `<div class="${m.winner === 'p1' ? 'win' : ''}">Winner: ${m.winner === 'tie' ? 'tie' : name(m.winner)} — ${esc(m.endReason)}</div>` : '';
-  let html = `<h2>${name('p1')} vs ${name('p2')}</h2><div class="small">${esc(m.id)} · ${esc(m.phase)} · best of ${m.bestOf} · score ${m.score.p1}–${m.score.p2}</div>${result}`;
-  if (m.sheets) {
-    html += `<h3>Open team sheets</h3><div class="sheets">` + ['p1', 'p2'].map(s => `<div class="sheet"><b>${s}</b>${m.sheets[s].map(p => `<div><b>${esc(p.species)}</b> @ ${esc(p.item)} · ${esc(p.ability)}<br><span class="small">${p.moves.map(esc).join(' · ')}</span></div>`).join('')}</div>`).join('') + `</div>`;
-  } else if (m.players.some(Boolean)) {
-    html += `<h3>Teambuilding</h3>` + m.players.filter(Boolean).map(p => `<div>${esc(p.name)}: ${p.teamSubmitted ? 'team submitted' : 'building…'}</div>`).join('');
-  }
-  if (m.games.length) {
-    gameTab ??= m.games.length;
-    html += `<div class="tabs">${m.games.map(g => `<button data-g="${g.n}" class="${g.n === gameTab ? 'sel' : ''}">Game ${g.n}${g.winner ? ` · ${g.winner}` : ''}</button>`).join('')}</div>`;
-    const g = m.games[gameTab - 1];
-    if (g) {
-      html += `<div class="small">Turn ${g.turn} · <a href="/replay/${m.id}/${g.n}" target="_blank">animated replay</a></div><pre>${esc(g.log.join('\n'))}</pre>`;
-      if (m.decisions) {
-        const ds = m.decisions.filter(x => x.game === g.n);
-        html += `<h3>Decisions (revealed after the match)</h3>` + ds.map(x => {
-          const p = x.payload || {};
-          const preds = (p.predictions || []).map(q => `${q.foe}: ${q.action} ${Math.round(q.confidence * 100)}%`).join('; ');
-          const score = (x.predictionScores || []).map(q => `${q.foe} ${q.correct ? '✓' : '✗'} (${q.actual})`).join('; ');
-          return `<div class="decision"><b>${x.side} · ${x.kind === 'preview' ? 'preview' : `turn ${x.turn}`}${x.depth ? ` · ${x.depth}` : ''}</b> → <code>${esc(x.choice)}</code>${x.thinkMs ? ` <span class="small">${Math.round(x.thinkMs / 1000)}s</span>` : ''}
-            ${['bring', 'key_threats', 'game_plan', 'lessons', 'threats', 'win_condition', 'reason', 'risk', 'plan'].filter(k => p[k]).map(k => `<div><span class="small">${k}</span> ${esc(Array.isArray(p[k]) ? p[k].join(', ') : p[k])}</div>`).join('')}
-            ${preds ? `<div><span class="small">predictions</span> ${esc(preds)}${score ? ` → ${esc(score)}` : ''}</div>` : ''}</div>`;
-        }).join('');
-      }
-    }
-  }
-  html += `<h3>Events</h3><pre>${esc(m.events.map(e => `${e.t.slice(11, 19)} ${e.text}`).join('\n'))}</pre>`;
-  d.innerHTML = html;
-  d.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { gameTab = Number(b.dataset.g); renderMatch(m); });
-}
-refresh();
-setInterval(refresh, 2500);
-</script>
+<header class="top">
+  <a class="brand" href="#/">VGC Arena</a>
+  <nav id="nav">
+    <a href="#/" data-r="">Leaderboard</a>
+    <a href="#/h2h" data-r="h2h">Head to head</a>
+    <a href="#/pokemon" data-r="pokemon">Pokémon</a>
+    <a href="#/matches" data-r="matches">Matches</a>
+    <a href="#/play" data-r="play">Play</a>
+    <a href="#/about" data-r="about">About</a>
+  </nav>
+  <span class="meta" id="meta"></span>
+</header>
+<main id="view"><div class="empty">Loading…</div></main>
+<div class="tooltip" id="tip"></div>
+<script src="/app.js"></script>
 </body>
 </html>

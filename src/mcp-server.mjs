@@ -9,7 +9,7 @@ export function buildMcpServer(call) {
   });
   for (const tool of TOOLS) {
     server.registerTool(tool.name, {description: tool.description, inputSchema: tool.input}, async args => {
-      const text = await call(tool.name, args);
+      const text = await call(tool.name, args, server.server.getClientVersion?.() || null);
       return {content: [{type: 'text', text}]};
     });
   }
