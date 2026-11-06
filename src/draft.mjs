@@ -103,6 +103,7 @@ export function setSlot(draft, args) {
     const total = Object.values(out).reduce((a, b) => a + b, 0);
     if (total > SP_MAX_TOTAL) return {error: `That's ${total} stat points; the limit is ${SP_MAX_TOTAL} in total.`};
     s.sp = out;
+    s.spSet = true;
   }
   if (args.moves !== undefined) {
     const list = (Array.isArray(args.moves) ? args.moves : [args.moves]).filter(Boolean);
@@ -133,14 +134,14 @@ export function clearSlot(draft, slot) {
   return {ok: true};
 }
 
-function slotMissing(s) {
+export function slotMissing(s) {
   const miss = [];
   if (!s.ability) miss.push('ability');
   if (!s.item) miss.push('item');
   if (!s.nature) miss.push('nature');
-  const used = Object.values(s.sp).reduce((a, b) => a + b, 0);
-  if (used < SP_MAX_TOTAL) miss.push(`stat points (${used}/${SP_MAX_TOTAL} used)`);
-  if (s.moves.length < 4) miss.push(`${4 - s.moves.length} move${s.moves.length === 3 ? '' : 's'}`);
+  if (!s.spSet) miss.push('stat points');
+  const need = Math.min(4, legalMoves(dex.species.get(s.species)).length);
+  if (s.moves.length < need) miss.push(`${need - s.moves.length} move${need - s.moves.length === 1 ? '' : 's'}`);
   return miss;
 }
 

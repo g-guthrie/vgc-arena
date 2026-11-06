@@ -10,6 +10,7 @@ import {renderObservation, legalOptions, toShowdownChoice, REQUIRED_FIELDS} from
 import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION} from './briefing.mjs';
 import {resolveModel} from './models.mjs';
 import {newDraft, setSlot, clearSlot, boardText, lockCheck, boardSummary} from './draft.mjs';
+import {question, questionText} from './guided.mjs';
 
 const RESEARCH_TOOLS = new Set(['search_pokemon', 'pokemon', 'search_moves', 'move', 'search_items', 'item', 'ability', 'calc']);
 
@@ -156,6 +157,33 @@ export class Match extends EventEmitter {
     const r = clearSlot(d.seat.draft, slot);
     this.emit('change');
     return r.error ? {error: r.error, board: boardText(d.seat.draft)} : {ok: true, board: boardText(d.seat.draft)};
+  }
+
+  // Guided path: answer the board's current question.
+  draftQuestion(token) {
+    const side = this.sideOf(token);
+    return question(this.seats[side].draft);
+  }
+
+  draftAnswer(token, args) {
+    const d = this.draftSeat(token);
+    if (d.error) return d;
+    const q = question(d.seat.draft);
+    const need = {concept: ['concept'], species: ['species'], ability: ['ability'], item: ['item'], moves: ['moves'], spread: ['nature', 'sp'], lock: ['team_plan']}[q.step];
+    const missing = need.filter(k => args[k] === undefined || args[k] === null || args[k] === '');
+    if (missing.length) return {error: `This question (${q.title}) needs: ${missing.join(', ')}.`, question: q};
+    let r;
+    if (q.step === 'concept') r = this.draftConcept(token, {concept: args.concept});
+    else if (q.step === 'lock') r = this.teamLock(token, {team_plan: args.team_plan});
+    else r = this.draftSet(token, {slot: q.slot, ...Object.fromEntries(need.map(k => [k, args[k]]))});
+    if (r.error) return {...r, question: q};
+    return {ok: true, locked: q.step === 'lock'};
+  }
+
+  guidedText(token) {
+    const side = this.sideOf(token);
+    const draft = this.seats[side].draft;
+    return `${boardText(draft)}\n\n${questionText(question(draft))}`;
   }
 
   draftView(token) {
@@ -489,7 +517,7 @@ export class Match extends EventEmitter {
     const g = this.game;
     if (g?.view) g.view[side].promptedAt ||= Date.now();
     if (this.phase === 'teambuilding') {
-      return {...base, yourTurn: true, kind: 'teambuilding', text: `${TEAMBUILD_TEXT}\n\nYour opponent is anonymous to you (and you to them). You will see their team sheet at team preview.\n\n${boardText(this.seats[side].draft)}`};
+      return {...base, yourTurn: true, kind: 'teambuilding', text: `${TEAMBUILD_TEXT}\n\nYour opponent is anonymous to you (and you to them). You will see their team sheet at team preview.\n\n${this.guidedText(token)}`};
     }
     if (this.phase === 'preview') {
       const L = [];

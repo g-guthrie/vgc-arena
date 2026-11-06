@@ -18,11 +18,13 @@ export const PROVIDERS = {
 
 // The model never handles its seat token or the lobby; the loop does.
 // Teambuilding goes through the draft board only (one path, checked at every step).
-const HIDDEN = new Set(['arena_join', 'arena_wait', 'arena_state', 'arena_forfeit', 'arena_models', 'match_transcript', 'team_submit', 'validate_team']);
-const SUBMITS = new Set(['team_lock', 'preview_submit', 'turn_submit']);
-const DRAFT_TOOLS = new Set(['draft_concept', 'draft_set', 'draft_clear', 'draft_view']);
-const LIMITS = {teambuilding: 60, preview: 6, move: 6, switch: 4};
-const SUBMIT_FOR = {teambuilding: 'team_lock', preview: 'preview_submit', move: 'turn_submit', switch: 'turn_submit'};
+// Teambuilding is guided: one question per decision, answered through a per-question
+// draft_answer whose schema holds exactly the legal answers.
+const HIDDEN = new Set(['arena_join', 'arena_wait', 'arena_state', 'arena_forfeit', 'arena_models', 'match_transcript', 'team_submit', 'validate_team',
+  'draft_concept', 'draft_set', 'draft_clear', 'draft_view', 'team_lock', 'draft_question', 'draft_answer']);
+const SUBMITS = new Set(['draft_answer', 'preview_submit', 'turn_submit']);
+const LIMITS = {teambuilding: 8, preview: 6, move: 6, switch: 4};
+const SUBMIT_FOR = {teambuilding: 'draft_answer', preview: 'preview_submit', move: 'turn_submit', switch: 'turn_submit'};
 const KEEP_PRIOR = 4;     // messages kept from before the current decision
 const KEEP_TOOLS = 10;    // recent tool results kept whole within the current decision
 
@@ -36,7 +38,7 @@ function toolSchemas() {
 }
 
 const SYSTEM = `You are playing in VGC Arena through function calls. Each user message is the arena's current view of your match.
-Act only by calling functions. Teambuilding follows the draft-board procedure in the observation (draft_concept, draft_set, team_lock), with the dex functions for research; every board reply ends with NEXT, so follow it. Finish every other decision with exactly one submit call (preview_submit or turn_submit).
+Act only by calling functions. Teambuilding is a series of small questions: answer each with draft_answer (its options are the legal answers), researching first with the dex functions if you need to. Finish every other decision with exactly one submit call (preview_submit or turn_submit).
 If you cannot call functions, reply with only a JSON object {"tool": "<function name>", "args": {...}} and nothing else.`;
 
 // Pull a {"tool": name, "args": {...}} object out of a plain-text reply.
@@ -86,7 +88,7 @@ export class ApiAgent {
     const cap = Number(process.env.VGC_API_MAX_USD || 3);
     if (this.usage.cost > cap) throw Object.assign(new Error(`spending cap of $${cap} reached for this match`), {fatal: true});
     // Only this phase's submit tool is offered, so a model can't reach for the wrong one.
-    const tools = this.tools.filter(t => !SUBMITS.has(t.function.name) || t.function.name === SUBMIT_FOR[this.kind]);
+    const tools = this.currentTools();
     const body = {model: this.model, messages: this.compact(), tools, tool_choice: force ? {type: 'function', function: {name: force}} : 'required', parallel_tool_calls: false};
     if (this.provider === 'openai') {
       body.max_completion_tokens = this.maxTokens;
@@ -140,6 +142,13 @@ export class ApiAgent {
     throw lastErr;
   }
 
+  // This phase's tools: research everywhere, plus exactly one way to answer.
+  currentTools() {
+    const research = this.tools.filter(t => !SUBMITS.has(t.function.name));
+    if (this.kind === 'teambuilding') return [...research, this.answerTool].filter(Boolean);
+    return [...research, ...this.tools.filter(t => t.function.name === SUBMIT_FOR[this.kind])];
+  }
+
   // Long matches: keep the system prompt, the tail of the previous decision,
   // and the whole current decision (its instructions are never dropped);
   // older lookup results inside the decision are shortened, not removed.
@@ -164,13 +173,13 @@ export class ApiAgent {
     const maxLimit = limit + 18;
     for (let i = 0; i < limit; i++) {
       // Wrap up research in time: a nudge past the budget, then force the submit.
-      if (kind === 'teambuilding' && i === Math.floor(limit * 0.6)) this.messages.push({role: 'user', content: `You have used ${i} of ${limit} calls for teambuilding. Stop researching: fill any empty slots, finish every set with draft_set, then team_lock. Follow the board's NEXT line.`});
+      if (kind === 'teambuilding' && i === Math.floor(limit * 0.6)) this.messages.push({role: 'user', content: 'Answer this question now with draft_answer.'});
       const force = i >= limit - 2 ? SUBMIT_FOR[kind] : null;
       const msg = await this.complete(force);
       let calls = msg.tool_calls || [];
       // Fallback for models that answer in text: accept {"tool": …, "args": …}.
       if (!calls.length) {
-        const fb = jsonToolCall(msg.content, this.tools);
+        const fb = jsonToolCall(msg.content, this.currentTools());
         if (fb) calls = [{id: `json_${Date.now()}_${i}`, type: 'function', function: {name: fb.tool, arguments: JSON.stringify(fb.args)}}];
       }
       this.messages.push({role: 'assistant', content: msg.content || null, ...(calls.length ? {tool_calls: calls} : {})});
@@ -215,6 +224,10 @@ export class ApiAgent {
       if (/FINISHED/.test(head)) return st;
       if (!/YOUR TURN/.test(head)) { await this.call('arena_wait', {seat: this.seat}); continue; }
       const kind = /TEAMBUILDING/.test(st) ? 'teambuilding' : /TEAM PREVIEW/.test(st) ? 'preview' : /DECISION: choose a replacement/.test(st) ? 'switch' : 'move';
+      if (kind === 'teambuilding') {
+        const q = JSON.parse(await this.call('draft_question', {seat: this.seat}));
+        this.answerTool = {type: 'function', function: {name: 'draft_answer', description: `${q.title}. ${q.prompt}`, parameters: q.schema}};
+      }
       const ok = await this.decide(st, kind);
       if (ok) { failures = 0; continue; }
       if (++failures >= 3) {

@@ -188,6 +188,30 @@ export const TOOLS = [
   },
   // ---------------------------------------------------------------- the draft board
   {
+    name: 'draft_answer',
+    description: 'Answer the current teambuilding question (shown as QUESTION n of ~32). Send only the field(s) that question asks for: concept, species, ability, item, moves, nature+sp, or team_plan for the final lock. Returns the board and the next question.',
+    input: {
+      seat,
+      concept: z.string().optional(), species: z.string().optional(), ability: z.string().optional(), item: z.string().optional(),
+      moves: z.array(z.string()).optional(), nature: z.string().optional(),
+      sp: z.record(z.string(), z.number()).optional().describe('{"hp":…, "atk":…, "def":…, "spa":…, "spd":…, "spe":…} 0–32 each, 66 total'),
+      team_plan: z.string().optional(),
+    },
+    async run(arena, a) {
+      const m = arena.matchFor(a.seat);
+      const res = m.draftAnswer(a.seat, a);
+      if (res.error) return `NOT APPLIED — ${res.error}\n\n${m.phase === 'teambuilding' ? m.guidedText(a.seat) : ''}`;
+      if (res.locked) return afterSubmit(arena, a.seat, res, 'Team locked.', 'draft_answer');
+      return m.guidedText(a.seat);
+    },
+  },
+  {
+    name: 'draft_question',
+    description: 'The current teambuilding question as JSON, including a JSON schema of its legal answers (for programmatic clients).',
+    input: {seat},
+    async run(arena, a) { return JSON.stringify(arena.matchFor(a.seat).draftQuestion(a.seat)); },
+  },
+  {
     name: 'draft_concept',
     description: 'Teambuilding step 1: record your team concept (archetype, speed mode, win condition). Returns the draft board.',
     input: {seat, concept: z.string().describe('2–3 sentences')},
