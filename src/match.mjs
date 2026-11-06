@@ -6,7 +6,7 @@ import {EventEmitter} from 'node:events';
 import {toID, FORMAT_ID, SHOWDOWN_COMMIT} from './showdown.mjs';
 import {validateTeam, openSheet, openSheetText, exportTeam, parseTeam} from './dex-tools.mjs';
 import {Game, describeLines} from './game.mjs';
-import {renderObservation, legalOptions, toShowdownChoice, REQUIRED_FIELDS} from './observation.mjs';
+import {renderObservation, choiceFromAnswer, predictionEnum} from './observation.mjs';
 import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION} from './briefing.mjs';
 import {resolveModel} from './models.mjs';
 import {newDraft, setSlot, clearSlot, boardText, lockCheck, boardSummary} from './draft.mjs';
@@ -176,34 +176,30 @@ export class Match extends EventEmitter {
     if (this.phase === 'preview') {
       const mine = this.seats[side].team.map(s => dex.species.get(s.species).name);
       const props = {
-        bring: {type: 'array', items: {type: 'string', enum: mine}, minItems: 4, maxItems: 4, uniqueItems: true, description: 'Four of YOUR six; the first two lead'},
-        key_threats: str("The opponent's 2–3 most dangerous Pokémon or modes and how you handle each"),
-        game_plan: str('Lead plan, win condition, what to preserve'),
+        bring: {type: 'array', items: {type: 'string', enum: mine}, minItems: 4, maxItems: 4, description: 'Four of YOUR six, no repeats; the first two lead'},
+        game_plan: str('Leads, win condition, answers to their biggest threats; what changed from earlier games'),
       };
-      if (this.game.n > 1) props.lessons = str('What earlier games taught you and what you are changing');
       return {kind: 'preview', tool: 'preview_submit', schema: {type: 'object', properties: props, required: Object.keys(props), additionalProperties: false}};
     }
+    const obs = this.currentObs(side);
+    return {kind: obs.options.kind, tool: 'turn_submit', schema: obs.schema};
+  }
+
+  // The current turn observation, rendered once per request.
+  currentObs(side) {
     const game = this.currentGame;
-    const opts = legalOptions(game, side);
     const view = this.game.view[side];
-    const depth = view.lastObs?.req === game.request(side) ? view.lastObs.depth : this.observe(side).depth;
-    const targetEnum = t => (t === 'adjacentAlly' ? ['ally'] : t === 'adjacentAllyOrSelf' ? ['self', 'ally'] : t === 'adjacentFoe' ? ['foe1', 'foe2'] : ['foe1', 'foe2', 'ally']);
-    const variants = [];
-    for (const s of opts.slots) {
-      if (opts.kind === 'switch' ? !s.mustSwitch : s.fainted) continue;
-      for (const m of s.moves || []) {
-        const v = {slot: {type: 'integer', enum: [s.slot]}, move: {type: 'string', enum: [m.name]}};
-        if (m.needsTarget) v.target = {type: 'string', enum: targetEnum(m.target)};
-        if (s.canMega) v.mega = {type: 'boolean'};
-        variants.push({type: 'object', properties: v, required: ['slot', 'move', ...(m.needsTarget && !['adjacentAlly', 'adjacentAllyOrSelf'].includes(m.target) ? ['target'] : [])], additionalProperties: false});
-      }
-      if (s.switches?.length) variants.push({type: 'object', properties: {slot: {type: 'integer', enum: [s.slot]}, switch: {type: 'string', enum: s.switches.map(x => x.species)}}, required: ['slot', 'switch'], additionalProperties: false});
+    const req = game.request(side);
+    if (!view.lastObs || view.lastObs.req !== req) {
+      view.lastObs = {...this.observe(side), req};
+      view.cursor = game.battle.log.length;
     }
-    const acting = opts.slots.filter(s => (opts.kind === 'switch' ? s.mustSwitch : !s.fainted)).length;
-    const props = {actions: {type: 'array', items: {anyOf: variants}, minItems: Math.min(1, acting), maxItems: acting, description: 'One action per slot that acts'}};
-    if (depth !== 'switch') props.predictions = {type: 'array', items: {type: 'object', properties: {foe: {type: 'string', enum: ['foe1', 'foe2']}, action: str('Move name or "switch"'), confidence: {type: 'number', minimum: 0, maximum: 1}}, required: ['foe', 'action', 'confidence'], additionalProperties: false}};
-    for (const f of REQUIRED_FIELDS[depth]) if (!props[f]) props[f] = str(f.replace('_', ' '));
-    return {kind: depth === 'switch' ? 'switch' : 'move', tool: 'turn_submit', depth, schema: {type: 'object', properties: props, required: REQUIRED_FIELDS[depth], additionalProperties: false}};
+    return view.lastObs;
+  }
+
+  sheetFor(side, species) {
+    const base = dex.species.get(species);
+    return this.seats[side].sheet.find(s => [base.name, base.baseSpecies].some(n => toID(n) === toID(s.species)));
   }
 
   draftQuestion(token) {
@@ -301,7 +297,7 @@ export class Match extends EventEmitter {
     this.log(`game ${n} team preview`);
   }
 
-  submitPreview(token, {bring, game_plan, key_threats, lessons}) {
+  submitPreview(token, {bring, game_plan}) {
     const side = this.sideOf(token);
     const g = this.game;
     if (this.phase !== 'preview' || !g) return {error: `Not in team preview (phase: ${this.phase}).`};
@@ -314,14 +310,10 @@ export class Match extends EventEmitter {
       if (i < 0) return {error: `"${name}" is not on your team (or listed twice). Your team: ${team.map(s => s.species).join(', ')}.`};
       idx.push(i + 1);
     }
-    const missing = [];
-    if (!game_plan) missing.push('game_plan');
-    if (!key_threats) missing.push('key_threats');
-    if (g.n > 1 && !lessons) missing.push('lessons');
-    if (missing.length) return {error: `Missing required fields: ${missing.join(', ')}.`};
+    if (!game_plan || !String(game_plan).trim()) return {error: 'game_plan is required: leads, win condition, answers to their threats.'};
     const res = g.game.choose(side, `team ${idx.join(', ')}`);
     if (!res.ok) return {error: res.error};
-    g.preview[side] = {bring: idx.map(i => team[i - 1].species), game_plan: clip(game_plan), key_threats: clip(key_threats), lessons: clip(lessons), at: new Date().toISOString()};
+    g.preview[side] = {bring: idx.map(i => team[i - 1].species), game_plan: clip(game_plan), at: new Date().toISOString()};
     g.view[side].plan = clip(game_plan);
     this.recordDecision(side, {kind: 'preview', payload: g.preview[side], choice: `team ${idx.join(', ')}`});
     this.log(`${this.seats[side].name} locked in team preview`);
@@ -341,29 +333,23 @@ export class Match extends EventEmitter {
     if (!game.needsChoice(side)) return {error: 'It is not your turn to act. Call arena_wait.'};
     const view = g.view[side];
     const req = game.request(side);
-    let obs = view.lastObs && view.lastObs.req === req ? view.lastObs : null;
-    if (!obs) { obs = {...this.observe(side), req}; view.cursor = game.battle.log.length; view.lastObs = obs; }
-    const depth = obs.depth;
-    const missing = REQUIRED_FIELDS[depth].filter(f => payload[f] === undefined || payload[f] === null || payload[f] === '');
-    if (missing.length) return {error: `Missing required fields for a ${depth.toUpperCase()} turn: ${missing.join(', ')}.`};
-    let predictions = null;
-    if (depth === 'full' || depth === 'light') {
-      if (!Array.isArray(payload.predictions)) return {error: '`predictions` must be an array like [{"foe":"foe1","action":"Protect","confidence":0.6}].'};
-      predictions = payload.predictions.slice(0, 2).map(p => ({
-        foe: String(p?.foe || '').toLowerCase(), action: clip(String(p?.action || '')),
-        confidence: Math.max(0, Math.min(1, Number(p?.confidence))),
-      }));
-      if (predictions.some(p => !['foe1', 'foe2'].includes(p.foe) || !p.action || Number.isNaN(p.confidence))) {
-        return {error: 'Each prediction needs foe ("foe1"/"foe2"), action (move name or "switch"), confidence (0–1).'};
-      }
-      const opp = game.side(other(side));
-      for (const p of predictions) {
-        const mon = opp.active[p.foe === 'foe1' ? 0 : 1];
-        p.species = mon && !mon.fainted ? (mon.illusion ? mon.illusion.species.name : mon.species.name) : null;
-      }
-    }
-    const conv = toShowdownChoice(game, side, obs.options, payload.actions);
+    const obs = this.currentObs(side);
+    const conv = choiceFromAnswer(obs.menu, payload);
     if (conv.error) return {error: conv.error};
+    // Predictions: one per live foe, an option from its sheet (or "switch").
+    const predictions = [];
+    // Built-in bots don't predict, so prediction stats stay about models.
+    const predict = this.seats[side].harness === 'builtin' ? [] : obs.menu.predict;
+    for (const f of predict) {
+      const p = payload.predictions?.[f.foe];
+      const allowed = predictionEnum(this.sheetFor(other(side), f.species));
+      if (!p || typeof p !== 'object') return {error: `predictions.${f.foe} (${f.species}) is required: {"action": one of ${allowed.join(' | ')}, "confidence": 0–1}.`};
+      const action = allowed.find(x => toID(x) === toID(p.action));
+      if (!action) return {error: `predictions.${f.foe}.action must be one of: ${allowed.join(' | ')}.`};
+      const confidence = Number(p.confidence);
+      if (!(confidence >= 0 && confidence <= 1)) return {error: `predictions.${f.foe}.confidence must be a number from 0 to 1.`};
+      predictions.push({foe: f.foe, species: f.species, action, confidence});
+    }
     const turnBefore = game.turn;
     const logBefore = game.battle.log.length;
     const resolves = obs.options.kind === 'move' && !game.needsChoice(other(side));
@@ -372,8 +358,8 @@ export class Match extends EventEmitter {
     if (!res.ok) return {error: res.error};
     if (snap) applySpeedConstraints(this.speedBounds, speedConstraints(game.battle, snap));
     const record = {
-      kind: obs.options.kind, depth, turn: turnBefore,
-      payload: Object.fromEntries(Object.entries(payload).map(([k, v]) => [k, typeof v === 'string' ? clip(v) : v])),
+      kind: obs.options.kind, turn: turnBefore,
+      payload: {ids: conv.ids, actions: conv.actions, predictions, reason: typeof payload.reason === 'string' ? clip(payload.reason) : null},
       choice: conv.choice, observation: obs.text,
     };
     this.recordDecision(side, record);
@@ -382,9 +368,6 @@ export class Match extends EventEmitter {
       view.predictions = predictions;
       view.predLogStart = logBefore;
       view.lastRecord = record;
-    }
-    if (typeof payload.plan === 'string' && payload.plan.trim() && !/^on[ -]?track\.?$/i.test(payload.plan.trim())) {
-      view.plan = `${clip(payload.plan)} (revised turn ${turnBefore})`;
     }
     if (game.battle.log.length > logBefore) this.afterResolve(turnBefore);
     this.emit('change');
@@ -552,18 +535,6 @@ export class Match extends EventEmitter {
     if (!theyMega) {
       const live = this.seats[other(side)].sheet.filter(s => s.item && dex.items.get(s.item).megaStone);
       if (live.length) alerts.push(`They have not Mega Evolved this game. Mega Stone holders on their sheet: ${live.map(s => `${s.species} (${s.item})`).join(', ')}.`);
-      for (const p of opp.active) {
-        if (!p || p.fainted || p.species.isMega) continue;
-        const form = megaForm(p);
-        if (form) alerts.push(`Their ${p.species.name} can Mega Evolve THIS turn into ${form}. Mega Evolution applies before moves, Speed included; its Mega numbers are under MEGA EVOLUTION.`);
-      }
-    }
-    if (!game.battle.log.some(l => l.startsWith(`|-mega|${side}`))) {
-      for (const p of game.side(side).active) {
-        if (!p || p.fainted || p.species.isMega) continue;
-        const form = megaForm(p);
-        if (form) alerts.push(`Your ${p.species.name} can Mega Evolve into ${form}. Its Mega numbers are under MEGA EVOLUTION.`);
-      }
     }
     const youMega = game.battle.log.some(l => l.startsWith(`|-mega|${side}`));
     if (youMega) alerts.push('You have already used your Mega Evolution this game.');
@@ -620,20 +591,12 @@ export class Match extends EventEmitter {
       L.push('', `OPPONENT'S OPEN TEAM SHEET:`, openSheetText(opp.sheet));
       L.push('', 'Opponent stat ranges at level 50 (any legal spread):');
       for (const s of opp.sheet) L.push(`  ${s.species}: ${rangesLine(s.species)}`);
-      L.push('', `preview_submit fields:
-  bring: exactly 4 of your species; the first two lead (e.g. ["${seat.team[0].species}", "${seat.team[1].species}", "${seat.team[2].species}", "${seat.team[3].species}"])
-  key_threats: their 2–3 most dangerous Pokémon/modes for your team and how you handle each — 2–3 sentences
-  game_plan: your lead plan, win condition and what you must preserve — 2–3 sentences${g.n > 1 ? '\n  lessons: what earlier games taught you about this opponent and what you are changing — 1–2 sentences' : ''}`);
+      L.push('', `ANSWER with preview_submit: {"bring": [4 of ${seat.team.map(s => `"${s.species}"`).join(', ')}], "game_plan": "…"}
+  bring: the first two lead · game_plan: 2–3 sentences on leads, win condition and answers to their biggest threats${g.n > 1 ? ', and what you are changing from earlier games' : ''}`);
       return {...base, yourTurn: true, kind: 'preview', text: L.join('\n')};
     }
-    const view = g.view[side];
-    const req = this.currentGame.request(side);
-    if (!view.lastObs || view.lastObs.req !== req) {
-      view.lastObs = {...this.observe(side), req};
-      view.cursor = this.currentGame.battle.log.length;
-    }
-    const obs = view.lastObs;
-    return {...base, yourTurn: true, kind: obs.options.kind, depth: obs.depth, turn: this.currentGame.turn, text: obs.text};
+    const obs = this.currentObs(side);
+    return {...base, yourTurn: true, kind: obs.options.kind, turn: this.currentGame.turn, text: obs.text};
   }
 
   // Re-render without advancing the "since last decision" cursor.
@@ -765,15 +728,6 @@ function sheetDex(sheet) {
     for (const m of p.moves) { const mv = dex.moves.get(m); moves[mv.name] = {type: mv.type, category: mv.category, bp: mv.basePower || 0}; }
   }
   return {species, moves};
-}
-
-function megaForm(p) {
-  const stone = p.item && dex.items.get(p.item);
-  const name = stone?.megaStone?.[p.species.name] || stone?.megaStone?.[p.baseSpecies.name];
-  if (!name) return null;
-  const f = dex.species.get(name);
-  const bs = f.baseStats;
-  return `${f.name} (${f.types.join('/')}, ability ${Object.values(f.abilities)[0]}, base ${bs.hp}/${bs.atk}/${bs.def}/${bs.spa}/${bs.spd}/${bs.spe})`;
 }
 
 function rangesLine(species) {

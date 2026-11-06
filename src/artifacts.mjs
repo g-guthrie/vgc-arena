@@ -37,7 +37,7 @@ export function transcript(art) {
     for (const s of ['p1', 'p2']) {
       const pv = g.preview?.[s];
       if (!pv) continue;
-      out += `**${s} preview:** brings ${pv.bring.join(', ')}\n${field('Key threats', pv.key_threats)}${field('Game plan', pv.game_plan)}${field('Lessons', pv.lessons)}\n`;
+      out += `**${s} preview:** brings ${pv.bring.join(', ')}\n${field('Game plan', pv.game_plan)}\n`;
     }
     const decisions = art.decisions.filter(d => d.game === g.n && d.kind !== 'preview');
     const turns = [...new Set(decisions.map(d => d.turn))].sort((a, b) => a - b);
@@ -45,9 +45,8 @@ export function transcript(art) {
       out += `### Turn ${t}\n`;
       for (const d of decisions.filter(x => x.turn === t)) {
         const p = d.payload;
-        out += `- **${d.side}** (${d.kind}${d.depth && d.kind === 'move' ? `, ${d.depth}` : ''}${d.thinkMs ? `, ${Math.round(d.thinkMs / 1000)}s` : ''}) → \`${d.choice}\`\n`;
-        out += field('Threats', p.threats) + field('Win condition', p.win_condition) + field('Predictions', (p.predictions || []).map(x => `${x.foe}: ${x.action} ${Math.round((x.confidence || 0) * 100)}%`).join('; '));
-        out += field('Reason', p.reason) + field('Risk', p.risk) + field('Plan', p.plan);
+        out += `- **${d.side}** (${d.kind}${d.thinkMs ? `, ${Math.round(d.thinkMs / 1000)}s` : ''}) → ${Object.values(p.ids || {}).join(' ')} \`${d.choice}\`\n`;
+        out += field('Predictions', (p.predictions || []).map(x => `${x.foe}: ${x.action} ${Math.round((x.confidence || 0) * 100)}%`).join('; ')) + field('Reason', p.reason);
         if (d.predictionScores) out += field('Prediction outcome', d.predictionScores.map(x => `${x.foe}: ${x.correct ? '✓' : '✗'} (actual ${x.actual})`).join('; '));
       }
       out += '\n';

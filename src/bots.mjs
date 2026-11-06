@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {dex, ROOT_DIR} from './showdown.mjs';
-import {legalOptions} from './observation.mjs';
+import {legalOptions, actionMenu, optionFor} from './observation.mjs';
 
 export const BOT_KINDS = ['random', 'greedy'];
 const TEAM_FILES = ['sample-sun.txt', 'sample-room.txt'];
@@ -66,12 +66,28 @@ function decideTurn(game, side, kind) {
     }
     actions.push(a);
   }
-  return {
-    actions,
-    predictions: [], // bots don't predict; keeps prediction stats about models only
-    reason: `${kind} bot`, plan: 'on track', threats: 'n/a', win_condition: 'n/a', risk: 'n/a',
-  };
+  return {actions: toIds(game, side, actions), reason: `${kind} bot`}; // bots don't predict
 }
+
+// Bots think in moves and targets; the arena takes option IDs.
+function toIds(game, side, actions) {
+  const menu = actionMenu(game, side);
+  const used = new Set();
+  return Object.fromEntries(menu.slots.map(s => {
+    const want = actions.find(a => a.slot === s.slot);
+    const id = (want && optionFor(menu, want)) || firstFree(s, used);
+    const o = s.options.find(x => x.id === id);
+    if (o?.action.switch) used.add(o.action.switch);
+    return [`slot${s.slot}`, id];
+  }));
+}
+
+// A slot's first option that doesn't send in a Pokémon another slot already sends.
+function firstFree(slot, used) {
+  return (slot.options.find(o => o.action.pass) || slot.options.find(o => !used.has(o.action.switch)) || slot.options[0])?.id;
+}
+
+
 
 export function attachBot(match, token, kind) {
   const side = match.sideOf(token);
@@ -88,16 +104,19 @@ export function attachBot(match, token, kind) {
           match.submitTeam(token, {team: sampleTeam(), team_plan: `Built-in ${kind} bot using a fixed sample team.`});
         } else if (match.phase === 'preview') {
           const team = match.seats[side].team.map(s => s.species);
-          match.submitPreview(token, {bring: shuffle(team).slice(0, 4), game_plan: 'n/a', key_threats: 'n/a', lessons: 'n/a'});
+          match.submitPreview(token, {bring: shuffle(team).slice(0, 4), game_plan: `${kind} bot`});
         } else if (match.phase === 'battle') {
           const payload = decideTurn(match.currentGame, side, kind);
           const res = match.submitTurn(token, payload);
           if (res.error) {
-            // Never stall a match: fall back to the first legal option per slot.
-            const opts = legalOptions(match.currentGame, side);
-            const actions = opts.slots.filter(s => !s.fainted && (opts.kind !== 'switch' || s.mustSwitch)).map(s => (opts.kind === 'switch' || !s.moves?.length
-              ? {slot: s.slot, switch: s.switches[0]?.species}
-              : {slot: s.slot, move: s.moves[0].name, target: 'foe1'}));
+            // Never stall a match: fall back to the first option per slot.
+            const menu = actionMenu(match.currentGame, side);
+            const used = new Set();
+            const actions = Object.fromEntries(menu.slots.map(s => {
+              const id = firstFree(s, used);
+              used.add(s.options.find(o => o.id === id)?.action.switch);
+              return [`slot${s.slot}`, id];
+            }));
             const res2 = match.submitTurn(token, {...payload, actions});
             if (res2.error) {
               failures++;

@@ -98,7 +98,7 @@ function speedFacts(battle, mine, theirs, known = {}) {
     all.push({label: `their ${speciesName(p)}`, lo, hi, exact: lo === hi, note: narrowed(p)});
   }
   all.sort((a, b) => tr ? a.hi - b.hi : b.lo - a.lo);
-  rows.push(`Effective Speed now (boosts, paralysis, Tailwind, items, abilities applied; opponent = range over every legal spread, narrowed by the move order seen so far): ${all.map(x => `${x.label} ${x.lo === x.hi ? x.lo : `${x.lo}–${x.hi}`}${x.note || ''}`).join(' · ')}`);
+  rows.push(`Effective Speed now (all modifiers; opponent = range over legal spreads, narrowed by move order seen): ${all.map(x => `${x.label} ${x.lo === x.hi ? x.lo : `${x.lo}–${x.hi}`}${x.note || ''}`).join(' · ')}`);
   for (const m of mine) {
     const s = effectiveSpeed(m);
     for (const t of theirs) {
@@ -107,7 +107,7 @@ function speedFacts(battle, mine, theirs, known = {}) {
       if (s > hi) verdict = tr ? `they move first (Trick Room)` : `you move first`;
       else if (s < lo) verdict = tr ? `you move first (Trick Room)` : `they move first`;
       else if (lo === hi) verdict = `SPEED TIE (${s}) — random`;
-      else verdict = `UNCERTAIN — depends on their hidden spread (their range ${lo}–${hi} contains your ${s})`;
+      else verdict = `UNCERTAIN (their ${lo}–${hi} contains your ${s})`;
       rows.push(`your ${speciesName(m)} vs their ${speciesName(t)}: ${verdict}`);
     }
   }
@@ -119,14 +119,14 @@ function priorityFacts(mine, theirs, oppSheetBySpecies) {
   for (const p of mine) {
     for (const slot of p.moveSlots) {
       const pr = priorityOf(p, slot.id);
-      if (pr) rows.push(`your ${speciesName(p)}: ${slot.move} (priority ${pr > 0 ? '+' : ''}${pr})`);
+      if (pr && !dex.moves.get(slot.id).stallingMove) rows.push(`your ${speciesName(p)}: ${slot.move} (priority ${pr > 0 ? '+' : ''}${pr})`);
     }
   }
   for (const p of theirs) {
     const sheet = oppSheetBySpecies(p);
     for (const m of sheet?.moves || []) {
       const pr = priorityOf(p, toID(m));
-      if (pr) rows.push(`their ${speciesName(p)}: ${m} (priority ${pr > 0 ? '+' : ''}${pr})`);
+      if (pr && !dex.moves.get(m).stallingMove) rows.push(`their ${speciesName(p)}: ${m} (priority ${pr > 0 ? '+' : ''}${pr})`);
     }
   }
   return rows;
@@ -135,95 +135,73 @@ function priorityFacts(mine, theirs, oppSheetBySpecies) {
 function koTag(range, hpPct, defender) {
   if (!range) return '';
   const sash = defender && hpPct >= 100 && (toID(defender.item) === 'focussash' || toID(defender.ability) === 'sturdy') && !defender.volatiles?.substitute;
-  if (sash && range.hi >= hpPct) return ` → enough to KO, but ${toID(defender.item) === 'focussash' ? 'Focus Sash' : 'Sturdy'} leaves it at 1 HP from full`;
-  if (range.lo >= hpPct) return ' → KOs from current HP';
-  if (range.hi >= hpPct) return ' → can KO from current HP (high rolls/weak spread)';
-  if (range.lo * 2 >= hpPct) return ' → 2 hits KO';
+  if (sash && range.hi >= hpPct) return ` (${toID(defender.item) === 'focussash' ? 'Focus Sash' : 'Sturdy'} survives at 1 HP)`;
+  if (range.lo >= hpPct) return ' KO';
+  if (range.hi >= hpPct) return ' KO on high rolls';
+  if (range.lo * 2 >= hpPct) return ' 2HKO';
   return '';
 }
 
+// One line per attacker → target: the two strongest hits, plus immunities.
+// Everything else is one calc call away.
+function hitsLine(battle, a, d, moveIds, hidden, hpPct) {
+  const hits = [];
+  const immune = [];
+  for (const id of moveIds) {
+    const move = dex.moves.get(id);
+    if (move.category === 'Status') continue;
+    const r = damageRange(battle, a, d, id, hidden);
+    if (!r) continue;
+    if (r.immune) { immune.push(move.name); continue; }
+    hits.push({move, r});
+  }
+  hits.sort((x, y) => y.r.hi - x.r.hi);
+  const parts = hits.slice(0, 2).map(({move, r}) => {
+    let ally = '';
+    if (move.target === 'allAdjacent') {
+      const mate = a.side.active.find(p => p && p !== a && !p.fainted);
+      const ar = mate && damageRange(battle, a, mate, move.id, hidden === 'attacker' ? 'attacker' : null);
+      if (ar && !ar.immune) ally = `, ally takes ${r1(ar.lo)}–${r1(ar.hi)}%`;
+    }
+    return `${move.name}${isSpreadTag(move)} ${r1(r.lo)}–${r1(r.hi)}%${koTag(r, hpPct, d)}${ally}`;
+  });
+  if (immune.length) parts.push(`immune to ${immune.join(', ')}`);
+  return parts.join(' · ');
+}
+
 function damageFacts(battle, mine, theirs, oppSheetBySpecies) {
-  const ours = [];
-  for (const a of mine) {
-    for (const slot of a.moveSlots) {
-      const move = dex.moves.get(slot.id);
-      if (move.category === 'Status') continue;
-      const parts = [];
-      for (const d of theirs) {
-        const r = damageRange(battle, a, d, slot.id, 'defender');
-        if (!r) continue;
-        if (r.immune) { parts.push(`${speciesName(d)} immune`); continue; }
-        parts.push(`${speciesName(d)} [${publicHpPercent(d)}%] ${r1(r.lo)}–${r1(r.hi)}%${koTag(r, publicHpPercent(d), d)}`);
-      }
-      if (move.target === 'allAdjacent') {
-        const ally = a.side.active.find(p => p && p !== a && !p.fainted);
-        if (ally) {
-          const r = damageRange(battle, a, ally, slot.id, null);
-          if (r && !r.immune) parts.push(`ALSO your ${speciesName(ally)} ${r1(r.lo)}–${r1(r.hi)}%`);
-          else if (r?.immune) parts.push(`your ${speciesName(ally)} immune`);
-        }
-      }
-      if (parts.length) ours.push(`your ${speciesName(a)} ${move.name}${isSpreadTag(move)}: ${parts.join(' | ')}`);
-    }
+  const sheetMoves = p => (oppSheetBySpecies(p)?.moves || []).map(toID);
+  const ownMoves = p => p.moveSlots.map(m => m.id);
+  const rows = [];
+  for (const a of mine) for (const d of theirs) {
+    const line = hitsLine(battle, a, d, ownMoves(a), 'defender', publicHpPercent(d));
+    if (line) rows.push(`your ${speciesName(a)} → ${speciesName(d)} [${publicHpPercent(d)}%]: ${line}`);
   }
-  const theirsOut = [];
-  for (const a of theirs) {
-    const sheet = oppSheetBySpecies(a);
-    for (const name of sheet?.moves || []) {
-      const move = dex.moves.get(name);
-      if (move.category === 'Status') continue;
-      const parts = [];
-      for (const d of mine) {
-        const r = damageRange(battle, a, d, move.id, 'attacker');
-        if (!r) continue;
-        if (r.immune) { parts.push(`${speciesName(d)} immune`); continue; }
-        const hpNow = (d.hp / d.maxhp) * 100;
-        parts.push(`${speciesName(d)} [${Math.round(hpNow)}%] ${r1(r.lo)}–${r1(r.hi)}%${koTag(r, hpNow, d)}`);
-      }
-      if (parts.length) theirsOut.push(`their ${speciesName(a)} ${move.name}${isSpreadTag(move)}: ${parts.join(' | ')}`);
-    }
+  for (const a of theirs) for (const d of mine) {
+    const hp = (d.hp / d.maxhp) * 100;
+    const line = hitsLine(battle, a, d, sheetMoves(a), 'attacker', hp);
+    if (line) rows.push(`their ${speciesName(a)} → ${speciesName(d)} [${Math.round(hp)}%]: ${line}`);
   }
-  // What changes if a Mega-capable active Mega Evolves this turn.
+  // A Mega-capable active, as it would be after Mega Evolving at the start of this turn.
   const mega = [];
   for (const p of [...mine, ...theirs]) {
     const view = megaPreview(battle, p);
     if (!view) continue;
     const own = mine.includes(p);
-    const who = `${own ? 'your' : 'their'} ${view.mon.species.name}`;
-    const foes = (own ? theirs : mine).map(view.find).filter(Boolean);
-    const out = [];
-    const moves = own ? view.mon.moveSlots.map(m => m.id) : (oppSheetBySpecies(p)?.moves || []).map(toID);
-    for (const id of moves) {
-      const move = dex.moves.get(id);
-      if (move.category === 'Status') continue;
-      const parts = [];
-      for (const d of foes) {
-        const r = damageRange(view.mon.battle, view.mon, d, id, own ? 'defender' : 'attacker');
-        if (!r) continue;
-        const hp = own ? publicHpPercent(d) : (d.hp / d.maxhp) * 100;
-        parts.push(r.immune ? `${speciesName(d)} immune` : `${speciesName(d)} ${r1(r.lo)}–${r1(r.hi)}%${koTag(r, hp, d)}`);
-      }
-      if (parts.length) out.push(`${move.name}: ${parts.join(' | ')}`);
+    const m = view.mon;
+    const copy = m.battle;
+    const [sLo, sHi] = own ? [effectiveSpeed(m), effectiveSpeed(m)] : effectiveSpeedRange(m);
+    const weather = copy.field.weather && copy.field.weather !== battle.field.weather ? `, sets ${weatherName(copy.field.weather)}` : '';
+    mega.push(`${own ? 'your' : 'their'} ${m.species.name} (${m.getAbility().name}${weather}; effective Speed ${sLo === sHi ? sLo : `${sLo}–${sHi}`}${own ? `; Atk ${m.storedStats.atk} SpA ${m.storedStats.spa}` : ''}):`);
+    for (const d of (own ? theirs : mine).map(view.find).filter(Boolean)) {
+      const hp = own ? publicHpPercent(d) : (d.hp / d.maxhp) * 100;
+      const out = hitsLine(copy, m, d, own ? ownMoves(m) : sheetMoves(p), own ? 'defender' : 'attacker', hp);
+      if (out) mega.push(`    → ${speciesName(d)}: ${out}`);
+      const back = hitsLine(copy, d, m, own ? sheetMoves(d) : ownMoves(d), own ? 'attacker' : 'defender', own ? (m.hp / m.maxhp) * 100 : publicHpPercent(m));
+      if (back) mega.push(`    ← ${speciesName(d)}: ${back}`);
     }
-    // Their strongest hits into the Mega form.
-    const into = [];
-    for (const a of (own ? theirs : mine).map(view.find).filter(Boolean)) {
-      const list = own ? (oppSheetBySpecies(a)?.moves || []).map(toID) : a.moveSlots.map(m => m.id);
-      let best = null;
-      for (const id of list) {
-        if (dex.moves.get(id).category === 'Status') continue;
-        const r = damageRange(view.mon.battle, a, view.mon, id, own ? 'attacker' : 'defender');
-        if (r && !r.immune && (!best || r.hi > best.r.hi)) best = {r, name: dex.moves.get(id).name};
-      }
-      if (best) into.push(`${own ? 'their' : 'your'} ${speciesName(a)} ${best.name} ${r1(best.r.lo)}–${r1(best.r.hi)}%`);
-    }
-    const field = view.mon.battle.field.weather && view.mon.battle.field.weather !== battle.field.weather ? ` (sets ${weatherName(view.mon.battle.field.weather)})` : '';
-    const st = view.mon.storedStats;
-    const [sLo, sHi] = own ? [effectiveSpeed(view.mon), effectiveSpeed(view.mon)] : effectiveSpeedRange(view.mon);
-    const spe = sLo === sHi ? `${sLo}` : `${sLo}–${sHi}`;
-    mega.push(`${who} if it Mega Evolves${field} — ${own ? `Atk ${st.atk} SpA ${st.spa}, ` : ''}effective Speed ${spe}, ${view.mon.getAbility().name}: ${out.join(' · ') || 'no damaging moves'}${into.length ? ` · taking: ${into.join(' · ')}` : ''}`);
   }
-  return {ours, theirs: theirsOut, mega};
+  return {rows, mega};
 }
 const isSpreadTag = m => m.target === 'allAdjacentFoes' ? ' (spread)' : m.target === 'allAdjacent' ? ' (spread, hits ally too)' : '';
 
@@ -266,138 +244,143 @@ export function legalOptions(game, sideId) {
   };
 }
 
-// Model-facing action objects → one Showdown choice string.
-export function toShowdownChoice(game, sideId, options, actions) {
-  if (!Array.isArray(actions)) return {error: '`actions` must be an array, one entry per active slot.'};
-  if (options.kind === 'preview') return {error: 'Use preview_submit during team preview.'};
-  const side = game.side(sideId);
-  const bySlot = new Map();
-  for (const a of actions) {
-    const slot = Number(a?.slot);
-    if (!slot || bySlot.has(slot)) return {error: `Each action needs a unique "slot" (1 or 2). Got ${JSON.stringify(a)}.`};
-    bySlot.set(slot, a);
-  }
-  const parts = [];
-  const usedSwitch = new Set();
-  let megaCount = 0;
-  // With fewer healthy Pokémon than empty slots, only that many switches are owed.
-  const must = options.kind === 'switch' ? options.slots.filter(s => s.mustSwitch) : [];
-  const benchCount = new Set(must.flatMap(s => s.switches.map(x => x.index))).size;
-  const owed = Math.min(must.length, benchCount);
-  const given = must.filter(s => bySlot.get(s.slot)?.switch).length;
-  for (const s of options.slots) {
-    const a = bySlot.get(s.slot);
-    if (options.kind === 'switch') {
-      if (!s.mustSwitch) { parts.push('pass'); continue; }
-      if (!a?.switch && given >= owed) { parts.push('pass'); continue; }
-      if (!a?.switch) return {error: `Slot ${s.slot} must switch: give {"slot": ${s.slot}, "switch": "<species>"}. Options: ${s.switches.map(x => x.species).join(', ')}.`};
-      const target = s.switches.find(x => toID(x.species) === toID(a.switch) || String(x.index) === String(a.switch));
-      if (!target) return {error: `Slot ${s.slot} cannot switch to "${a.switch}". Options: ${s.switches.map(x => x.species).join(', ')}.`};
-      if (usedSwitch.has(target.index)) return {error: `Both slots cannot switch to ${target.species}.`};
-      usedSwitch.add(target.index);
-      parts.push(`switch ${target.index}`);
-      continue;
-    }
-    if (s.fainted) { parts.push('pass'); continue; }
-    if (!a) return {error: `Missing action for slot ${s.slot} (${s.species}).`};
-    if (a.switch) {
-      if (!s.switches.length) return {error: `Slot ${s.slot} (${s.species}) cannot switch${s.trapped ? ' (trapped)' : ' (no healthy bench)'}.`};
-      const target = s.switches.find(x => toID(x.species) === toID(a.switch) || String(x.index) === String(a.switch));
-      if (!target) return {error: `Slot ${s.slot} cannot switch to "${a.switch}". Options: ${s.switches.map(x => x.species).join(', ')}.`};
-      if (usedSwitch.has(target.index)) return {error: `Both slots cannot switch to ${target.species}.`};
-      usedSwitch.add(target.index);
-      parts.push(`switch ${target.index}`);
-      continue;
-    }
-    if (!a.move) return {error: `Slot ${s.slot} needs "move" or "switch".`};
-    const idx = s.moves.findIndex(m => m.id === toID(a.move));
-    if (idx < 0) return {error: `Slot ${s.slot} (${s.species}) cannot use "${a.move}" now. Usable: ${s.moves.map(m => m.name).join(', ')}.`};
-    const m = s.moves[idx];
-    const realIndex = game.request(sideId).active[s.slot - 1].moves.findIndex(x => x.id === m.id) + 1;
-    let choice = `move ${realIndex}`;
-    if (m.needsTarget) {
-      const loc = resolveTarget(game, sideId, s.slot, m, a.target);
-      if (loc.error) return {error: `Slot ${s.slot} ${m.name}: ${loc.error}`};
-      choice += ` ${loc.loc}`;
-    }
-    if (a.mega) {
-      if (!s.canMega) return {error: `Slot ${s.slot} (${s.species}) cannot Mega Evolve.`};
-      megaCount++;
-      choice += ' mega';
-    }
-    parts.push(choice);
-  }
-  if (megaCount > 1) return {error: 'Only one Pokémon can Mega Evolve per battle.'};
-  return {choice: parts.join(', ')};
-}
+// ---------------------------------------------------------------- the menu
+// Every legal action for every slot gets a short ID ("1a", "2c"). The text the
+// player reads, the JSON schema, and the parser are all built from this one
+// menu, so an answer is either an exact ID from it or an error listing them.
+const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
 
-function resolveTarget(game, sideId, slot, move, target) {
+export function actionMenu(game, sideId, options = legalOptions(game, sideId)) {
   const side = game.side(sideId);
   const foes = side.foe.active;
-  const allyPos = slot === 1 ? 2 : 1;
+  const foeLabel = i => `foe${i} ${foes[i - 1] ? speciesName(foes[i - 1]) : ''}`.trim();
   const liveFoes = [1, 2].filter(i => foes[i - 1] && !foes[i - 1].fainted);
-  const t = target === undefined || target === null ? '' : String(target).toLowerCase().trim();
-  if (move.target === 'adjacentAlly') {
-    if (!t || t === 'ally') return {loc: -allyPos};
-    return {error: 'only targets your ally ("ally").'};
+  const req = game.request(sideId);
+  const slots = [];
+  const mustSlots = options.kind === 'switch' ? options.slots.filter(s => s.mustSwitch) : [];
+  const shortage = new Set(mustSlots.flatMap(s => s.switches.map(x => x.index))).size < mustSlots.length;
+  for (const s of options.slots) {
+    if (options.kind === 'switch' ? !s.mustSwitch : s.fainted) continue;
+    const opts = [];
+    const add = (label, choice, action, group, short) => opts.push({id: `${s.slot}${LETTERS[opts.length]}`, label, choice, action, group, short});
+    const allyPos = s.slot === 1 ? 2 : 1;
+    const ally = side.active[allyPos - 1];
+    const allyLive = ally && !ally.fainted;
+    for (const m of s.moves || []) {
+      const idx = req.active[s.slot - 1].moves.findIndex(x => x.id === m.id) + 1;
+      const base = {slot: s.slot, move: m.name};
+      if (!m.needsTarget) {
+        const note = m.target === 'allAdjacentFoes' ? ' (both foes)' : m.target === 'allAdjacent' ? ' (both foes + your ally)' : '';
+        add(`${m.name}${note}`, `move ${idx}`, base, `${m.name}${note}`, '');
+      } else if (m.target === 'adjacentAlly') {
+        if (allyLive) add(`${m.name} → ally ${speciesName(ally)}`, `move ${idx} -${allyPos}`, {...base, target: 'ally'}, m.name, 'ally');
+      } else if (m.target === 'adjacentAllyOrSelf') {
+        add(`${m.name} → self`, `move ${idx} -${s.slot}`, {...base, target: 'self'}, m.name, 'self');
+        if (allyLive) add(`${m.name} → ally ${speciesName(ally)}`, `move ${idx} -${allyPos}`, {...base, target: 'ally'}, m.name, 'ally');
+      } else {
+        for (const i of liveFoes.length ? liveFoes : [1]) add(`${m.name} → ${foeLabel(i)}`, `move ${idx} ${i}`, {...base, target: `foe${i}`}, m.name, `foe${i}`);
+        if (m.target !== 'adjacentFoe' && allyLive) add(`${m.name} → ally ${speciesName(ally)}`, `move ${idx} -${allyPos}`, {...base, target: 'ally'}, m.name, 'ally');
+      }
+    }
+    for (const x of s.switches || []) add(`switch → ${x.species}`, `switch ${x.index}`, {slot: s.slot, switch: x.species, index: x.index}, 'switch', x.species);
+    if (shortage) add('stay empty', 'pass', {slot: s.slot, pass: true}, 'stay empty', '');
+    slots.push({slot: s.slot, species: s.species, trapped: !!s.trapped, canMega: !!s.canMega, options: opts});
   }
-  if (move.target === 'adjacentAllyOrSelf') {
-    if (t === 'self' || !t) return {loc: -slot};
-    if (t === 'ally') return {loc: -allyPos};
-    return {error: 'target "self" or "ally".'};
-  }
-  if (!t) {
-    if (liveFoes.length === 1) return {loc: liveFoes[0]};
-    return {error: `needs a target: "foe1" (${foes[0] ? speciesName(foes[0]) : 'empty'}), "foe2" (${foes[1] ? speciesName(foes[1]) : 'empty'})${move.target !== 'adjacentFoe' ? ', or "ally"' : ''}.`};
-  }
-  if (t === 'foe1' || t === '1') return {loc: 1};
-  if (t === 'foe2' || t === '2') return {loc: 2};
-  if (t === 'ally' && move.target !== 'adjacentFoe') return {loc: -allyPos};
-  const byName = [1, 2].find(i => foes[i - 1] && toID(speciesName(foes[i - 1])) === toID(t));
-  if (byName) return {loc: byName};
-  return {error: `unknown target "${target}". Use "foe1", "foe2"${move.target !== 'adjacentFoe' ? ', or "ally"' : ''}.`};
+  const predict = options.kind === 'move'
+    ? liveFoes.map(i => ({foe: `foe${i}`, species: speciesName(foes[i - 1])}))
+    : [];
+  return {kind: options.kind, slots, megaSlots: slots.filter(s => s.canMega).map(s => s.slot), predict, actingSlots: options.slots.map(s => s.slot)};
 }
 
-// ---------------------------------------------------------------- rendering
-export function decisionDepth(ctx) {
-  if (ctx.kind === 'switch') return 'switch';
-  if (ctx.kind === 'preview') return 'preview';
-  if (ctx.turn <= 1) return 'full';
-  if (ctx.sinceLast?.some(l => /^\|(faint|switch|drag|-mega|-fieldstart|-fieldend|-weather\|(?!.*\[upkeep\]))/.test(l))) return 'full';
-  return 'light';
+// The prediction options for a foe: its sheet moves, or "switch".
+export function predictionEnum(sheet) {
+  return [...(sheet?.moves || []), 'switch'];
 }
 
-export const RESPONSE_SPECS = {
-  full: `turn_submit fields — FULL analysis this turn (a Pokémon fainted/switched, the field changed, or it's turn 1):
-  threats: the 1–2 biggest dangers to you right now and why (sweeper set-ups, speed control, spread damage, status) — 1–2 sentences
-  win_condition: how you win from here and what you must preserve — 1 sentence
-  predictions: [{foe:"foe1", action:"<move or 'switch'>", confidence:0–1}, {foe:"foe2", ...}]
-  actions: [{slot:1, move:"<move>", target:"foe1|foe2|ally"?, mega:true?} | {slot:1, switch:"<species>"}, {slot:2, ...}]
-  reason: why this beats their likely play — 1–2 sentences
-  risk: what punishes this and what would make you change it — 1 sentence
-  plan: "on track", or your revised game plan in ≤2 sentences`,
-  light: `turn_submit fields — LIGHT analysis this turn:
-  predictions: [{foe:"foe1", action:"<move or 'switch'>", confidence:0–1}, ...]
-  actions: [{slot:1, move:"<move>", target:"foe1|foe2|ally"?, mega:true?} | {slot:1, switch:"<species>"}, ...]
-  reason: 1 sentence
-  plan: "on track", or a revised plan in ≤2 sentences`,
-  switch: `turn_submit fields — replacement:
-  actions: [{slot:N, switch:"<species>"}] for each slot that must switch
-  reason: 1 sentence`,
-};
+// {actions: {slot1: id, ...}, mega?: slot} → Showdown choice + readable actions.
+export function choiceFromAnswer(menu, answer = {}) {
+  const ids = answer.actions;
+  if (!ids || typeof ids !== 'object' || Array.isArray(ids)) return {error: `actions must be an object like {${menu.slots.map(s => `"slot${s.slot}": "${s.options[0]?.id}"`).join(', ')}}.`};
+  const picked = new Map();
+  for (const s of menu.slots) {
+    const raw = ids[`slot${s.slot}`];
+    if (raw === undefined || raw === null || raw === '') return {error: `Missing slot${s.slot} (${s.species}). Options: ${s.options.map(o => o.id).join(', ')}.`};
+    const opt = s.options.find(o => o.id === String(raw).trim().toLowerCase());
+    if (!opt) return {error: `"${raw}" is not an option for slot${s.slot} (${s.species}). Options: ${s.options.map(o => `${o.id} ${o.label}`).join(' · ')}.`};
+    picked.set(s.slot, opt);
+  }
+  const switches = [...picked.values()].filter(o => o.action.switch).map(o => o.action.index);
+  if (new Set(switches).size < switches.length) return {error: 'Both slots cannot switch to the same Pokémon.'};
+  const mega = answer.mega === undefined || answer.mega === null || answer.mega === false ? null : Number(answer.mega);
+  if (mega !== null) {
+    if (!menu.megaSlots.includes(mega)) return {error: menu.megaSlots.length ? `mega must be ${menu.megaSlots.join(' or ')} (or omitted).` : 'No Pokémon can Mega Evolve now; omit mega.'};
+    if (!picked.get(mega)?.action.move) return {error: `slot${mega} must use a move to Mega Evolve.`};
+  }
+  const parts = menu.actingSlots.map(n => {
+    const o = picked.get(n);
+    if (!o) return 'pass';
+    return n === mega ? `${o.choice} mega` : o.choice;
+  });
+  const actions = [...picked.values()].map(o => ({...o.action, ...(o.action.slot === mega ? {mega: true} : {}), index: undefined}));
+  return {choice: parts.join(', '), actions, ids: Object.fromEntries([...picked].map(([n, o]) => [`slot${n}`, o.id]))};
+}
 
-export const REQUIRED_FIELDS = {
-  full: ['threats', 'win_condition', 'predictions', 'actions', 'reason', 'risk', 'plan'],
-  light: ['predictions', 'actions', 'reason', 'plan'],
-  switch: ['actions', 'reason'],
-};
+// Readable action ({slot, move, target} | {slot, switch}) → its menu ID. For bots and tests.
+export function optionFor(menu, action) {
+  const s = menu.slots.find(x => x.slot === action.slot);
+  const opts = s?.options || [];
+  if (action.switch) return opts.find(o => toID(o.action.switch) === toID(action.switch))?.id;
+  const same = opts.filter(o => o.action.move && toID(o.action.move) === toID(action.move));
+  return (same.find(o => o.action.target === action.target) || same[0])?.id;
+}
+
+// JSON schema of a turn answer, from the same menu. Every field is listed as
+// required (nullable where optional) so providers can enforce it strictly.
+export function turnSchema(menu, sheetFor) {
+  const props = {
+    actions: {type: 'object', properties: Object.fromEntries(menu.slots.map(s => [`slot${s.slot}`, {type: 'string', enum: s.options.map(o => o.id), description: s.species}])),
+      required: menu.slots.map(s => `slot${s.slot}`), additionalProperties: false},
+  };
+  if (menu.megaSlots.length) props.mega = {type: ['integer', 'null'], enum: [...menu.megaSlots, null], description: 'Slot that Mega Evolves this turn, or null'};
+  if (menu.predict.length) {
+    props.predictions = {type: 'object', additionalProperties: false, required: menu.predict.map(f => f.foe),
+      properties: Object.fromEntries(menu.predict.map(f => [f.foe, {type: 'object', additionalProperties: false, required: ['action', 'confidence'],
+        properties: {action: {type: 'string', enum: predictionEnum(sheetFor(f.foe)), description: `What ${f.species} does this turn`}, confidence: {type: 'number', description: '0–1'}}}]))};
+  }
+  props.reason = {type: ['string', 'null'], description: 'One sentence, optional'};
+  return {type: 'object', properties: props, required: Object.keys(props), additionalProperties: false};
+}
+
+function menuText(menu, sheetFor) {
+  const L = ['', 'YOUR OPTIONS:'];
+  for (const s of menu.slots) {
+    L.push(`  slot${s.slot} ${s.species}${s.trapped ? ' (trapped)' : ''}${s.canMega ? ' — can Mega Evolve' : ''}:`);
+    const groups = [];
+    for (const o of s.options) {
+      const g = groups.find(x => x.name === o.group) || (groups.push({name: o.group, opts: []}), groups.at(-1));
+      g.opts.push(o);
+    }
+    for (const g of groups) L.push(`    ${g.name}: ${g.opts.map(o => (o.short ? `${o.id} ${o.short}` : o.id)).join(' · ')}`);
+  }
+  const ex = {actions: Object.fromEntries(menu.slots.map(s => [`slot${s.slot}`, s.options[0]?.id]))};
+  if (menu.megaSlots.length) ex.mega = null;
+  if (menu.predict.length) ex.predictions = Object.fromEntries(menu.predict.map(f => [f.foe, {action: predictionEnum(sheetFor(f.foe))[0], confidence: 0.5}]));
+  ex.reason = '…';
+  L.push('', `ANSWER with turn_submit: ${JSON.stringify(ex)}`);
+  const notes = ['actions: one option ID per slot'];
+  if (menu.megaSlots.length) notes.push(`mega: ${menu.megaSlots.join(' or ')} to Mega Evolve that slot this turn, else null`);
+  if (menu.predict.length) notes.push(`predictions: for each foe, one of its sheet moves or "switch", with your confidence 0–1 (scored against what they chose)`);
+  notes.push('reason: optional, one sentence');
+  L.push(`  ${notes.join(' · ')}`);
+  return L;
+}
 
 export function renderObservation(game, sideId, ctx) {
   const battle = game.battle;
   const me = game.side(sideId);
   const opp = me.foe;
   const options = legalOptions(game, sideId);
-  const depth = decisionDepth({kind: options.kind, turn: battle.turn, sinceLast: ctx.sinceLastRaw});
+  const menu = actionMenu(game, sideId, options);
   const sheetBySpecies = p => {
     const base = p.illusion ? p.illusion : p;
     return ctx.oppSheet.find(s => toID(s.species) === toID(base.baseSpecies.baseSpecies) || toID(s.species) === toID(base.baseSpecies.name) || toID(s.species) === toID(base.set.species));
@@ -409,7 +392,7 @@ export function renderObservation(game, sideId, ctx) {
   if (options.kind === 'switch') {
     L.push('DECISION: choose a replacement for your fainted / switching Pokémon.');
   } else {
-    L.push(`DECISION: choose actions for your active Pokémon. Analysis depth: ${depth.toUpperCase()}.`);
+    L.push('DECISION: choose an action for each of your active Pokémon.');
   }
   if (ctx.gamePlan) L.push(`YOUR GAME PLAN: ${ctx.gamePlan}`);
 
@@ -502,11 +485,10 @@ export function renderObservation(game, sideId, ctx) {
     if (pri.length) L.push(`PRIORITY MOVES: ${pri.join(' · ')}`);
     if (options.kind === 'move') {
       const dmg = damageFacts(battle, mine, theirs, sheetBySpecies);
-      L.push('', 'DAMAGE (% of target max HP; non-crit; opponent side = range over their possible spreads × rolls; Protect, Helping Hand, Intimidate-to-come not included):');
-      for (const row of dmg.ours) L.push(`  ${row}`);
-      for (const row of dmg.theirs) L.push(`  ${row}`);
+      L.push('', 'DAMAGE (% of target max HP, two strongest hits per target, non-crit; opponent spreads hidden so their side is a range; anything else: calc):');
+      for (const row of dmg.rows) L.push(`  ${row}`);
       if (dmg.mega.length) {
-        L.push('MEGA EVOLUTION (same numbers with the Mega form; Mega Evolution happens before moves):');
+        L.push('IF IT MEGA EVOLVES (happens before moves, Speed included):');
         for (const row of dmg.mega) L.push(`  ${row}`);
       }
     }
@@ -517,22 +499,8 @@ export function renderObservation(game, sideId, ctx) {
     for (const a of ctx.alerts) L.push(`  ! ${a}`);
   }
 
-  // Legal actions
-  L.push('', 'LEGAL ACTIONS:');
-  if (options.kind === 'switch') {
-    const mustSlots = options.slots.filter(s => s.mustSwitch);
-    const bench = new Set(mustSlots.flatMap(s => s.switches.map(x => x.index))).size;
-    if (bench < mustSlots.length) L.push(`  (only ${bench} healthy Pokémon left: send ${bench === 1 ? 'it into one slot' : 'them'}; the other slot stays empty)`);
-  }
-  for (const s of options.slots) {
-    if (options.kind === 'switch') {
-      if (s.mustSwitch) L.push(`  slot ${s.slot}: switch to ${s.switches.map(x => x.species).join(' | ')}`);
-      continue;
-    }
-    if (s.fainted) { L.push(`  slot ${s.slot}: (fainted — no action)`); continue; }
-    const moves = s.moves.map(m => `${m.name}${m.needsTarget ? (m.target === 'adjacentAlly' ? ' →ally' : m.target === 'adjacentAllyOrSelf' ? ' →self|ally' : m.target === 'adjacentFoe' ? ' →foe1|foe2' : ' →foe1|foe2|ally') : ''}`);
-    L.push(`  slot ${s.slot} ${s.species}: ${moves.join(' · ')}${s.switches.length ? ` · switch: ${s.switches.map(x => x.species).join(' | ')}` : s.trapped ? ' · (trapped)' : ''}${s.canMega ? ' · MEGA available (add "mega": true)' : ''}`);
-  }
-  L.push('', RESPONSE_SPECS[depth]);
-  return {text: L.join('\n'), depth, options};
+  const foeSheet = foe => { const p = opp.active[foe === 'foe1' ? 0 : 1]; return p ? sheetBySpecies(p) : null; };
+  if (options.kind === 'switch' && menu.slots.some(s => s.options.some(o => o.action.pass))) L.push('', 'Fewer healthy Pokémon than empty slots: send what you have; a slot may stay empty.');
+  L.push(...menuText(menu, foeSheet));
+  return {text: L.join('\n'), options, menu, schema: turnSchema(menu, foeSheet)};
 }

@@ -59,31 +59,28 @@ for (let guard = 0; guard < 400; guard++) {
   if (/FINISHED/.test(text.split('\n')[0]) || /MATCH FINISHED/.test(text)) break;
   if (!/YOUR TURN/.test(text.split('\n')[0])) { text = await call('arena_wait', {seat}); continue; }
   if (/TEAM PREVIEW/.test(text)) {
-    text = await call('preview_submit', {seat, bring: ['Hatterene', 'Indeedee-F', 'Kingambit', 'Tyranitar'], key_threats: 'Charizard-Mega-Y sun spread damage; Garchomp Scarf.', game_plan: 'Follow Me + Trick Room, then sweep.', lessons: 'Keep Trick Room up.'});
+    text = await call('preview_submit', {seat, bring: ['Hatterene', 'Indeedee-F', 'Kingambit', 'Tyranitar'], game_plan: 'Follow Me + Trick Room, then sweep with Kingambit and Tyranitar.'});
     continue;
   }
-  // Parse the LEGAL ACTIONS block exactly as a model would see it.
-  const legal = text.slice(text.indexOf('LEGAL ACTIONS:')).split('\n').slice(1).filter(l => /^\s+slot \d/.test(l));
-  const actions = [];
-  const used = new Set();
-  for (const line of legal) {
-    const slot = Number(/slot (\d)/.exec(line)[1]);
-    if (/fainted — no action/.test(line)) continue;
-    const sw = /switch to (.+)$/.exec(line);
-    if (sw) {
-      const pickSw = sw[1].split(' | ').map(x => x.trim()).find(x => !used.has(x));
-      if (pickSw) { used.add(pickSw); actions.push({slot, switch: pickSw}); }
-      continue;
-    }
-    const body = line.slice(line.indexOf(':') + 1).split(' · ').map(x => x.trim());
-    const mv = body.find(x => !x.startsWith('switch:') && !x.startsWith('MEGA') && x !== 'Protect' && !x.startsWith('(trapped)')) || body[0];
-    const [name, targets] = mv.split(' →');
-    const a = {slot, move: name.trim()};
-    if (targets) a.target = targets.split('|')[0].trim();
-    actions.push(a);
+  // Read YOUR OPTIONS exactly as a model would: first non-Protect option per slot,
+  // and the predictions from the example answer.
+  const menu = text.slice(text.indexOf('YOUR OPTIONS:'), text.indexOf('ANSWER with turn_submit:'));
+  const opts = {};
+  let slot = null;
+  for (const line of menu.split('\n')) {
+    const head = /^\s+slot(\d) /.exec(line);
+    if (head) { slot = `slot${head[1]}`; opts[slot] = []; continue; }
+    const g = /^\s+(.+?): (.+)$/.exec(line);
+    if (g && slot) for (const o of g[2].split(' · ')) { const [id, ...rest] = o.split(' '); opts[slot].push({group: g[1], id, what: rest.join(' ')}); }
   }
-  const payload = {seat, actions, reason: 'scripted', plan: 'on track', threats: 'scripted', win_condition: 'scripted', risk: 'scripted',
-    predictions: [{foe: 'foe1', action: 'Protect', confidence: 0.4}, {foe: 'foe2', action: 'switch', confidence: 0.2}]};
+  const used = new Set();
+  const actions = Object.fromEntries(Object.entries(opts).map(([k, list]) => {
+    const o = list.find(x => x.group !== 'Protect' && !(x.group === 'switch' && used.has(x.what))) || list[0];
+    if (o.group === 'switch') used.add(o.what);
+    return [k, o.id];
+  }));
+  const example = JSON.parse(text.slice(text.indexOf('ANSWER with turn_submit:') + 24).split('\n')[0]);
+  const payload = {seat, ...example, actions, reason: 'scripted'};
   text = await call('turn_submit', payload);
   decisions++;
   if (text.startsWith('REJECTED')) { console.log(text); throw new Error('scripted client got rejected'); }

@@ -7,7 +7,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Match} from '../src/match.mjs';
 import {parseTeam, validateTeam, computeStats} from '../src/dex-tools.mjs';
-import {legalOptions} from '../src/observation.mjs';
+import {legalOptions, actionMenu, optionFor} from '../src/observation.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SUN = fs.readFileSync(path.join(ROOT, 'teams/sample-sun.txt'), 'utf8');
@@ -36,8 +36,8 @@ test('observations never reveal opponent spreads, natures, or which 4 they broug
   const preview = m.stateFor(a).text;
   for (const n of ['Brave', 'Quiet', 'Relaxed', 'Calm']) assert.ok(!preview.includes(`${n} Nature`), `preview leaks ${n}`);
   assert.ok(!/EVs: 32 HP \/ 32 Atk/.test(preview.split("OPPONENT'S OPEN TEAM SHEET")[1]), 'preview leaks opponent spreads');
-  m.submitPreview(a, {bring: ['Charizard', 'Whimsicott', 'Incineroar', 'Garchomp'], game_plan: 'x', key_threats: 'x'});
-  m.submitPreview(b, {bring: ['Hatterene', 'Indeedee-F', 'Kingambit', 'Primarina'], game_plan: 'x', key_threats: 'x'});
+  m.submitPreview(a, {bring: ['Charizard', 'Whimsicott', 'Incineroar', 'Garchomp'], game_plan: 'x'});
+  m.submitPreview(b, {bring: ['Hatterene', 'Indeedee-F', 'Kingambit', 'Primarina'], game_plan: 'x'});
   const obs = m.stateFor(a).text;
   for (const n of NATURES.filter(x => !['Modest', 'Careful', 'Jolly', 'Timid'].includes(x))) assert.ok(!obs.includes(n), `observation leaks nature ${n}`);
   // The unseen list must include every unseen sheet species (brought or not).
@@ -57,8 +57,8 @@ test('harness computations never change battle outcomes (RNG untouched)', () => 
     const b = m.join({name: 'B', model: 'b'}).token;
     m.submitTeam(a, {team: SUN, team_plan: 'Sun offense with Tailwind support.'});
     m.submitTeam(b, {team: ROOM, team_plan: 'Trick Room with Hatterene and Sinistcha.'});
-    m.submitPreview(a, {bring: ['Charizard', 'Venusaur', 'Garchomp', 'Rotom-Wash'], game_plan: 'x', key_threats: 'x'});
-    m.submitPreview(b, {bring: ['Kingambit', 'Tyranitar', 'Primarina', 'Sinistcha'], game_plan: 'x', key_threats: 'x'});
+    m.submitPreview(a, {bring: ['Charizard', 'Venusaur', 'Garchomp', 'Rotom-Wash'], game_plan: 'x'});
+    m.submitPreview(b, {bring: ['Kingambit', 'Tyranitar', 'Primarina', 'Sinistcha'], game_plan: 'x'});
     for (let i = 0; i < 40 && m.phase === 'battle' && m.game.n === 1; i++) {
       for (const [tok, side] of [[a, 'p1'], [b, 'p2']]) {
         if (!m.currentGame.needsChoice(side)) continue;
@@ -77,7 +77,10 @@ test('harness computations never change battle outcomes (RNG untouched)', () => 
           const mv = s.moves.find(x => x.id !== 'protect') || s.moves[0];
           return [{slot: s.slot, move: mv.name, target: mv.needsTarget ? 'foe1' : undefined}];
         });
-        const r = m.submitTurn(tok, {actions, reason: 'r', plan: 'on track', threats: 't', win_condition: 'w', risk: 'r', predictions: [{foe: 'foe1', action: 'x', confidence: 0.5}]});
+        const menu = actionMenu(m.currentGame, side);
+        const ids = Object.fromEntries(menu.slots.map(s => [`slot${s.slot}`, optionFor(menu, actions.find(a => a.slot === s.slot) || {}) || s.options[0].id]));
+        const predictions = Object.fromEntries(menu.predict.map(f => [f.foe, {action: 'switch', confidence: 0.5}]));
+        const r = m.submitTurn(tok, {actions: ids, predictions});
         assert.ok(!r.error, r.error);
       }
     }
@@ -102,8 +105,8 @@ Timid Nature
   const b = m.join({name: 'B', model: 'b'}).token;
   m.submitTeam(a, {team: SUN, team_plan: 'Sun offense with Tailwind support.'});
   m.submitTeam(b, {team: zoro, team_plan: 'Trick Room with an Illusion trick.'});
-  m.submitPreview(a, {bring: ['Charizard', 'Whimsicott', 'Incineroar', 'Garchomp'], game_plan: 'x', key_threats: 'x'});
-  m.submitPreview(b, {bring: ['Zoroark-Hisui', 'Indeedee-F', 'Kingambit', 'Hatterene'], game_plan: 'x', key_threats: 'x'});
+  m.submitPreview(a, {bring: ['Charizard', 'Whimsicott', 'Incineroar', 'Garchomp'], game_plan: 'x'});
+  m.submitPreview(b, {bring: ['Zoroark-Hisui', 'Indeedee-F', 'Kingambit', 'Hatterene'], game_plan: 'x'});
   const obs = m.stateFor(a).text;
   assert.ok(!/\[foe1\] Zoroark/.test(obs), 'disguise broken in observation');
   assert.ok(/\[foe1\] Hatterene/.test(obs), 'expected Zoroark disguised as the last Pokémon brought');

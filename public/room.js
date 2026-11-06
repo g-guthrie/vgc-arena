@@ -354,7 +354,7 @@ function renderBelow(rs, kind, n) {
     else renderReasoning(rs, rs.ps?.battle?.turn ?? 0);
   } else if (kind === 'pick' && rs.full?.previews) {
     const prev = rs.full.previews.find(p => p.n === n);
-    el.innerHTML = prev ? `<div class="two">${['p1', 'p2'].map(s => prev[s] ? `<div class="rcol" style="--pc:${pcolor(playerOf(rs.view, s)?.provider)}"><div class="rhead">${esc(nameOf(rs.view, s))}: game ${n} plan</div><div class="k">brings</div><div>${prev[s].bring.map(esc).join(' · ')}</div><div class="k">threats</div><div>${esc(prev[s].key_threats)}</div><div class="k">plan</div><div>${esc(prev[s].game_plan)}</div>${prev[s].lessons ? `<div class="k">lessons</div><div>${esc(prev[s].lessons)}</div>` : ''}</div>` : '').join('')}</div>` : '';
+    el.innerHTML = prev ? `<div class="two">${['p1', 'p2'].map(s => prev[s] ? `<div class="rcol" style="--pc:${pcolor(playerOf(rs.view, s)?.provider)}"><div class="rhead">${esc(nameOf(rs.view, s))}: game ${n} plan</div><div class="k">brings</div><div>${prev[s].bring.map(esc).join(' · ')}</div><div class="k">plan</div><div>${esc(prev[s].game_plan)}</div></div>` : '').join('')}</div>` : '';
   } else if ((kind === 'build' || kind === 'sheets') && rs.full?.teamPlans) {
     el.innerHTML = `<div class="two">${['p1', 'p2'].map(s => `<div class="rcol" style="--pc:${pcolor(playerOf(rs.view, s)?.provider)}"><div class="rhead">${esc(nameOf(rs.view, s))}: team plan</div><div>${esc(rs.full.teamPlans[s] || '')}</div></div>`).join('')}</div>`;
   } else el.innerHTML = '';
@@ -369,12 +369,12 @@ function renderReasoning(rs, turn) {
     const ds = rs.full.decisions.filter(d => d.game === n && d.side === side && d.turn === turn && d.kind !== 'preview');
     if (turn <= 0 && prev?.[side]) {
       const pv = prev[side];
-      return `<div class="rcol" style="--pc:${pcolor(playerOf(rs.view, side)?.provider)}"><div class="rhead">${esc(nameOf(rs.view, side))}</div><div class="k">brings</div><div>${pv.bring.map(b => sprite(b)).join('')}</div><div class="k">key threats</div><div>${esc(pv.key_threats)}</div><div class="k">game plan</div><div>${esc(pv.game_plan)}</div>${pv.lessons ? `<div class="k">lessons</div><div>${esc(pv.lessons)}</div>` : ''}</div>`;
+      return `<div class="rcol" style="--pc:${pcolor(playerOf(rs.view, side)?.provider)}"><div class="rhead">${esc(nameOf(rs.view, side))}</div><div class="k">brings</div><div>${pv.bring.map(b => sprite(b)).join('')}</div><div class="k">game plan</div><div>${esc(pv.game_plan)}</div></div>`;
     }
     const body = ds.map(d => {
       const p = d.payload || {};
-      return `<div class="dec"><div class="acts">${(p.actions || []).map(a => `<code>${esc(a.switch ? `↻ ${a.switch}` : `${a.move}${a.target ? ` → ${a.target}` : ''}${a.mega ? ' ✦mega' : ''}`)}</code>`).join(' ')} <span class="small muted">${d.kind === 'switch' ? 'replacement' : esc(d.depth)}${d.thinkMs ? ` · ${Math.round(d.thinkMs / 1000)}s` : ''}</span></div>
-        ${['threats', 'win_condition', 'reason', 'risk', 'plan'].filter(k => p[k] && !(k === 'plan' && /^on[ -]?track/i.test(p[k]))).map(k => `<div class="k">${k.replace('_', ' ')}</div><div>${esc(p[k])}</div>`).join('')}
+      return `<div class="dec"><div class="acts">${(p.actions || []).map(a => `<code>${esc(a.switch ? `↻ ${a.switch}` : `${a.move}${a.target ? ` → ${a.target}` : ''}${a.mega ? ' ✦mega' : ''}`)}</code>`).join(' ')} <span class="small muted">${d.kind === 'switch' ? 'replacement' : ''}${d.thinkMs ? ` · ${Math.round(d.thinkMs / 1000)}s` : ''}</span></div>
+        ${p.reason ? `<div class="k">reason</div><div>${esc(p.reason)}</div>` : ''}
         ${(p.predictions || []).length ? `<div class="k">predicted</div><div>${p.predictions.map((q, i) => { const sc = d.predictionScores?.[i]; return `<span class="pred ${sc?.actual ? (sc.correct ? 'ok' : 'bad') : ''}">${esc(q.foe)}: ${esc(q.action)} · ${Math.round((q.confidence || 0) * 100)}%${sc?.actual && !sc.correct ? ` → ${esc(sc.actual)}` : ''}</span>`; }).join(' ')}</div>` : ''}</div>`;
     }).join('');
     return `<div class="rcol" style="--pc:${pcolor(playerOf(rs.view, side)?.provider)}"><div class="rhead">${esc(nameOf(rs.view, side))}</div>${body || '<div class="muted small">No decision this turn.</div>'}</div>`;

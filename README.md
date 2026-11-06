@@ -32,7 +32,8 @@ The simplest way in: open the site's **Play** page, pick OpenAI or OpenRouter, p
   OPENROUTER_API_KEY=… VGC_ARENA_URL=https://arena.example node src/api-agent.mjs --provider openrouter --model anthropic/claude-sonnet-4.6 --room K7QX
   OPENAI_API_KEY=… node src/api-agent.mjs --provider openai --model gpt-5.5 --effort high --bot greedy
   ```
-- **Long matches.** Older turns are trimmed from the model's context, and each observation restates the plans. Models that reject `tool_choice` or reasoning-effort settings are retried without them.
+- **How it answers.** Each decision offers the dex tools plus one answer tool whose schema lists exactly the legal answers, sent in strict mode so the provider can only decode a legal answer. A model or provider that can't take strict schemas falls back to the same schema unenforced, and the arena still checks every answer. An empty reply gets one reminder; no legal answer within 12 calls forfeits the match. That failure is the measurement, not something we paper over.
+- **Long matches.** Older decisions are dropped from the model's context; each observation restates what it needs.
 
 ## Connecting players
 
@@ -63,8 +64,8 @@ tool_timeout_sec = 90
 node src/cli.mjs tools
 node src/cli.mjs arena_join '{"name":"DS","model":"deepseek-v4"}'
 node src/cli.mjs turn_submit - <<'JSON'
-{"seat":"seat_…","actions":[{"slot":1,"move":"Fake Out","target":"foe2"},{"slot":2,"move":"Protect"}],
- "predictions":[{"foe":"foe1","action":"Protect","confidence":0.6}],"reason":"…","plan":"on track"}
+{"seat":"seat_…","actions":{"slot1":"1b","slot2":"2h"},"mega":null,
+ "predictions":{"foe1":{"action":"Protect","confidence":0.6},"foe2":{"action":"Rock Slide","confidence":0.5}},"reason":"…"}
 JSON
 ```
 
@@ -133,22 +134,19 @@ Research tools are compact by default (`pokemon` lists attacks and key support m
 - the opponent's open sheet, with the stat range each opponent Pokémon could have under any legal spread;
 - in games 2–3, what the opponent revealed and led with in earlier games.
 
-You submit `bring` (4 Pokémon, first two lead), `key_threats`, `game_plan`, and from game 2 on, `lessons`.
+You submit `bring` (4 Pokémon, first two lead) and `game_plan`.
 
-**Each turn**, one text observation (about 1,500 tokens) contains:
+**Each turn**, one text observation (about 1,100 tokens) contains:
 - what happened since your last decision, and how your last predictions fared (✓/✗);
 - field, side conditions and timers, counted as turns left including this one;
 - your active Pokémon (exact stats, PP, effects, Protect odds) and your bench;
 - the opponent's active Pokémon: HP %, boosts, sheet item/ability/moves and possible stat ranges. Which of their 4 you've seen, and which sheet species could still be in the back;
-- **Speed order**: exact for you, a range for them, with `UNCERTAIN` where their hidden spread decides it. Trick Room and Tailwind are applied;
-- **damage ranges** in both directions with KO flags, computed by the simulator across every legal opponent spread (Focus Sash and Sturdy are flagged);
-- alerts: Mega Evolution availability and its effect on Speed, repeated identical actions, dead Fake Out;
-- the exact legal actions, and the fields to fill.
+- **Speed order**: exact for you, a range for them that narrows as move order reveals their Speed, with `UNCERTAIN` where their hidden spread still decides it. Trick Room and Tailwind are applied;
+- **damage**: the two strongest hits each way per pair, with KO flags, computed by the simulator across every legal opponent spread (Focus Sash and Sturdy are flagged); anything else is one `calc` call away;
+- **if it Mega Evolves**: the same numbers, Speed and weather for a Mega-capable active's Mega form;
+- **YOUR OPTIONS**: every legal action with a short ID, grouped by move, and an example answer.
 
-**The scaffold has three depths, chosen by the harness:**
-- **FULL**: on turn 1, after a faint or switch, or when the field changes. Asks for `threats`, `win_condition`, `predictions`, `actions`, `reason`, `risk`, `plan`.
-- **LIGHT**: all other turns. Asks for `predictions`, `actions`, `reason`, `plan`.
-- **Replacement**: after a faint. Asks for `actions` and `reason`.
+**The answer** is the same shape every turn: `actions` (one option ID per slot), `mega` (the slot that Mega Evolves, or null), `predictions` (each foe's sheet move or "switch", with confidence) and an optional one-sentence `reason`. Replacements after a faint take only `actions`. The text menu, the JSON schema (`decision_schema`) and the parser are built from one menu, so an answer is either an exact option or a rejection that lists the options.
 
 Each field is 1–2 sentences. Predictions are scored against what the opponent actually chose.
 
@@ -212,7 +210,7 @@ src/showdown.mjs     pinned simulator + format
 src/dex-tools.mjs    teambuilding lookups, validation, open sheets, Champions stat math
 src/calc.mjs         simulator-backed damage/speed, RNG-sandboxed, spread-range aware
 src/game.mjs         one battle; protocol → readable text
-src/observation.mjs  per-player view, computed facts, legal actions, action → Showdown choice
+src/observation.mjs  per-player view, computed facts, the option menu (text, schema, parser)
 src/match.mjs        Bo3 state machine, scaffold validation, prediction scoring
 src/arena.mjs        match registry, pairing, waiting
 src/tools.mjs        the tool catalog shared by MCP, HTTP and CLI

@@ -221,8 +221,7 @@ export const TOOLS = [
     input: {
       seat,
       bring: z.array(z.string()).describe('Exactly 4 of your species; first two lead'),
-      key_threats: z.string(), game_plan: z.string(),
-      lessons: z.string().optional().describe('Required in games 2–3: what earlier games taught you'),
+      game_plan: z.string().describe('Leads, win condition, answers to their biggest threats'),
     },
     async run(arena, a) {
       const m = arena.matchFor(a.seat);
@@ -231,17 +230,13 @@ export const TOOLS = [
   },
   {
     name: 'turn_submit',
-    description: 'Submit this turn: your actions plus the analysis fields the observation asked for (FULL, LIGHT or replacement). Invalid submissions are rejected with the reason and nothing is consumed.',
+    description: 'Submit this turn with option IDs from YOUR OPTIONS: {"actions": {"slot1": "1c", "slot2": "2a"}, "mega": null, "predictions": {"foe1": {"action": "<their move or switch>", "confidence": 0.6}, …}, "reason": "…"}. A wrong answer is refused with the options and nothing is consumed.',
     input: {
       seat,
-      actions: z.array(z.object({
-        slot: z.number().describe('1 or 2'),
-        move: z.string().optional(), target: z.string().optional().describe('foe1, foe2, ally, or self'),
-        mega: z.boolean().optional(), switch: z.string().optional().describe('Species to switch in'),
-      })),
-      predictions: z.array(z.object({foe: z.string(), action: z.string(), confidence: z.number()})).optional(),
-      threats: z.string().optional(), win_condition: z.string().optional(),
-      reason: z.string(), risk: z.string().optional(), plan: z.string().optional(),
+      actions: z.record(z.string(), z.string()).describe('{"slot1": "<option id>", "slot2": "<option id>"}'),
+      mega: z.number().nullable().optional().describe('Slot that Mega Evolves this turn'),
+      predictions: z.record(z.string(), z.object({action: z.string(), confidence: z.number()})).optional().describe('{"foe1": {"action": "…", "confidence": 0–1}, …}'),
+      reason: z.string().nullable().optional().describe('Optional, one sentence'),
     },
     async run(arena, a) {
       const m = arena.matchFor(a.seat);
