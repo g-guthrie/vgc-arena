@@ -455,7 +455,9 @@ export class Match extends EventEmitter {
     return {
       id: this.id, room: this.room, label: this.label, phase: this.phase, createdAt: this.createdAt, finishedAt: this.finishedAt,
       format: FORMAT_ID, bestOf: this.bestOf, score: this.score, winner: this.winner, endReason: this.endReason,
-      players: SIDES.map(s => this.seats[s] ? {side: s, name: this.seats[s].name, model: this.seats[s].model, modelName: this.seats[s].identity?.name, effort: this.seats[s].identity?.effort || null, provider: this.seats[s].identity?.provider, owner: this.seats[s].owner, harness: this.seats[s].harness, flags: this.seats[s].flags, teamSubmitted: !!this.seats[s].team} : null),
+      players: SIDES.map(s => this.seats[s] ? {side: s, name: this.seats[s].name, model: this.seats[s].model, modelName: this.seats[s].identity?.name, effort: this.seats[s].identity?.effort || null, provider: this.seats[s].identity?.provider, owner: this.seats[s].owner, harness: this.seats[s].harness, flags: this.seats[s].flags, teamSubmitted: !!this.seats[s].team,
+        rejections: this.rejections[s].length, api: this.seats[s].api || null} : null),
+      current: this.game ? {n: this.game.n, previewLocked: {p1: !!this.game.preview.p1, p2: !!this.game.preview.p2}, turn: this.game.game.turn} : null,
       sheets: showTeams ? {p1: this.seats.p1.sheet, p2: this.seats.p2.sheet} : null,
       games: this.games.map(g => ({
         n: g.n, winner: g.winner, turn: g.game.turn, endedAt: g.endedAt || null,
@@ -484,7 +486,7 @@ export class Match extends EventEmitter {
       winner: this.winner, endReason: this.endReason, score: this.score,
       players: Object.fromEntries(SIDES.map(s => [s, this.seats[s] && {
         name: this.seats[s].name, model: this.seats[s].model, identity: this.seats[s].identity, owner: this.seats[s].owner,
-        client: this.seats[s].client, detectedHarness: this.seats[s].detectedHarness, flags: this.seats[s].flags, harness: this.seats[s].harness,
+        client: this.seats[s].client, detectedHarness: this.seats[s].detectedHarness, flags: this.seats[s].flags, harness: this.seats[s].harness, api: this.seats[s].api || null,
         teamText: this.seats[s].teamText, teamPlan: this.seats[s].teamPlan, teamHash: this.seats[s].teamHash, teamAttempts: this.seats[s].teamAttempts,
       }])),
       games: this.games.map(g => ({n: g.n, seed: g.seed, winner: g.winner, turns: g.game.turn, startedAt: g.startedAt, endedAt: g.endedAt, preview: g.preview, spectatorLog: g.spectatorLog, displayLog: this.spectatorLines(g.n).join('\n'), omniscientLog: g.omniscientLog})),

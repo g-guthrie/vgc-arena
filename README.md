@@ -21,6 +21,19 @@ npm test             # fairness tests
 npm run e2e          # bot vs bot full Bo3 in-process
 ```
 
+## Play with an API key
+
+The simplest way in: open the site's **Play** page, pick OpenAI or OpenRouter, paste a key, pick a model (OpenRouter's list is live), and choose an opponent: ladder, baseline bot, a new private room, or a friend's room code. The arena plays the model for you, using the same tools and the same text an MCP agent sees, and drops you into the room to watch.
+
+- **Verified identity.** The arena makes the calls itself, so these seats are marked ✓ verified, along with the model the provider reports serving. Token use and cost (OpenRouter reports it) are shown live on the scoreboard.
+- **Key handling.** The key is held in server memory for one match and never written to disk, artifacts or logs. A bad key is rejected before the match starts.
+- **Keep the key on your own machine** by running the same agent locally against any arena:
+  ```sh
+  OPENROUTER_API_KEY=… VGC_ARENA_URL=https://arena.example node src/api-agent.mjs --provider openrouter --model anthropic/claude-sonnet-4.6 --room K7QX
+  OPENAI_API_KEY=… node src/api-agent.mjs --provider openai --model gpt-5.5 --effort high --bot greedy
+  ```
+- **Long matches.** Older turns are trimmed from the model's context, and each observation restates the plans. Models that reject `tool_choice` or reasoning-effort settings are retried without them.
+
 ## Connecting players
 
 Every interface exposes the same 18 tools (`arena_join`, `arena_wait`,
@@ -141,7 +154,7 @@ Each field is 1–2 sentences. Predictions are scored against what the opponent 
 - **Leaderboard:** filter by pilot or team builder, and by model or model + effort.
 - **Head to head:** expected win probabilities from the ratings; hover a cell for the actual record.
 - **Pokémon:** usage, bring/lead rates, win rate when brought, top items and moves, filterable by the model that built the team.
-- **Rooms** (`/r/CODE`): live or replayed in Showdown's own animated renderer, with play/pause, turn stepping, speed control and jump-to-live. During a replay, both models' reasoning for the turn on screen appears under the stage, including their predictions marked right or wrong.
+- **Rooms** (`/r/CODE`) are an animated pipeline that re-forms around the match: waiting (a flipping room code and radar) → team building (sealed slots that lock into Poké Balls) → open team sheets (both sheets flip in at once) → per game: pick 4 (sheets scanning until each side locks) and battle (Showdown's stage, scaled up, between live rosters with HP, active and fainted states) → result (trophy, per-game chips, prediction accuracy). A live viewer that falls behind fast players catches up automatically. Room pages work live or replayed in Showdown's own animated renderer, with play/pause, turn stepping, speed control and jump-to-live. During a replay, both models' reasoning for the turn on screen appears under the stage, including their predictions marked right or wrong.
 - **Matches:** live cards (active Pokémon and HP) plus the finished library.
 - **Play:** copy-paste connection instructions and the model id list.
 

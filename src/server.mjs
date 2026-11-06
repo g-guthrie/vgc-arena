@@ -17,6 +17,45 @@ import {listModels} from './models.mjs';
 import {describeLines} from './game.mjs';
 import {openSheet, parseTeam} from './dex-tools.mjs';
 import {replayHtml} from './artifacts.mjs';
+import {ApiAgent, PROVIDERS, checkKey} from './api-agent.mjs';
+
+const MAX_API_AGENTS = Number(process.env.VGC_MAX_API_AGENTS || 12);
+const apiAgents = new Set();
+let orModels = {at: 0, data: null};
+
+// Start an arena-hosted player on someone's API key. The key lives only in
+// this agent object's memory for the length of one match.
+async function startApiAgent(arena, b) {
+  const provider = String(b.provider || '').toLowerCase();
+  if (!PROVIDERS[provider]) throw Object.assign(new Error('provider must be "openai" or "openrouter"'), {status: 400});
+  if (!b.key || !b.model) throw Object.assign(new Error('key and model are required'), {status: 400});
+  if (apiAgents.size >= MAX_API_AGENTS) throw Object.assign(new Error('The arena is running as many API players as it can right now. Try again shortly.'), {status: 429});
+  const chk = await checkKey(provider, b.key);
+  if (!chk.ok) throw Object.assign(new Error(chk.error), {status: 400});
+  let match = null;
+  const agent = new ApiAgent({
+    provider, key: b.key, model: b.model, effort: b.effort || null,
+    call: (name, args) => runTool(arena, name, args, {client: {name: `arena-api/${provider}`, via: 'arena-api'}, verified: {provider}}),
+    onUsage: (usage, served) => {
+      try {
+        match ||= arena.matchFor(agent.seat);
+        const seat = match.seats[match.sideOf(agent.seat)];
+        seat.api = {provider, requested: b.model, served, calls: usage.calls, input: usage.input, output: usage.output, cost: usage.cost};
+      } catch {}
+    },
+  });
+  apiAgents.add(agent);
+  const join = {model: b.model, model_source: 'user', owner: b.owner || undefined};
+  const mode = b.mode || 'ladder';
+  if (mode === 'new') join.room = 'new';
+  else if (mode === 'room') join.room = b.room;
+  else if (mode === 'bot') join.vs_bot = b.bot || 'greedy';
+  agent.play(join)
+    .catch(err => { try { (match || (agent.seat && arena.matchFor(agent.seat)))?.log(`API player stopped: ${err.message}`); if (agent.seat) runTool(arena, 'arena_forfeit', {seat: agent.seat}); } catch {} })
+    .finally(() => apiAgents.delete(agent));
+  const {room} = await agent.joined;
+  return {room, provider, model: b.model};
+}
 
 function clientFrom(req, mcpClient) {
   let fwd = {};
@@ -139,6 +178,14 @@ export function createServer({arena = new Arena()} = {}) {
           if (b === 'pokemon') return send(res, 200, stats.pokemon({model: q.model}));
           if (b === 'model' && c) return send(res, 200, stats.model(decodeURIComponent(c)));
           return send(res, 404, {error: 'Unknown stats view'});
+        }
+        if (a === 'agents' && req.method === 'POST') return send(res, 200, await startApiAgent(arena, await body(req)));
+        if (a === 'providers' && b === 'openrouter' && c === 'models') {
+          if (!orModels.data || Date.now() - orModels.at > 3600e3) {
+            const r = await fetch(`${PROVIDERS.openrouter.base}/models`, {signal: AbortSignal.timeout(15000)}).then(x => x.json()).catch(() => null);
+            if (r?.data) orModels = {at: Date.now(), data: r.data.filter(m => (m.supported_parameters || []).includes('tools')).map(m => ({id: m.id, name: m.name, reasoning: (m.supported_parameters || []).includes('reasoning')}))};
+          }
+          return send(res, 200, orModels.data || []);
         }
         if (a === 'rooms' && b) {
           const code = b.toUpperCase();

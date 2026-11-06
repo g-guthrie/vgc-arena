@@ -81,10 +81,12 @@ export class Arena {
   // room: a friend's 4-character code to join, or "new" to open a private room.
   join({name, model, effort, model_source, harness, owner, key, room, match_id, vs_bot, fallback_bot_after_sec}, ctx = {}) {
     const identity = resolveModel(model, effort);
-    identity.source = model_source || 'unspecified';
+    identity.source = ctx.verified ? 'arena-api' : model_source || 'unspecified';
+    if (ctx.verified) identity.provider_route = ctx.verified.provider;
     const client = ctx.client || {};
     const {detectedHarness, flags} = identityFlags(identity, client);
     if (identity.source === 'guess') flags.push('model-self-guessed');
+    if (ctx.verified) { flags.length = 0; flags.push('verified-api'); if (!identity.listed) flags.push('unlisted-model'); }
     let ownerName = owner || '';
     let ownerVerified = false;
     if (KEYS.size) {
