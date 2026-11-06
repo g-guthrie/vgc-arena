@@ -439,7 +439,7 @@ export class Match extends EventEmitter {
     const pub = game.linesFor('spectator');
     for (const line of pub) {
       const m = /^\|(switch|drag)\|(p[12])[ab]: [^|]*\|([^,|]+)/.exec(line);
-      if (m) g.view[other(m[2])].oppSeen.add(m[3]);
+      if (m) g.view[other(m[2])].oppSeen.add(teamName(m[3]));
     }
     if (resolvedTurn !== undefined) this.scorePredictions(resolvedTurn);
     g.turns = game.turn;
@@ -532,7 +532,11 @@ export class Match extends EventEmitter {
         const pos = p.foe === 'foe1' ? 'a' : 'b';
         const used = lines.map(l => new RegExp(`^\\|move\\|${other(side)}${pos}: [^|]*\\|([^|]*)`).exec(l)).find(Boolean);
         const switched = lines.some(l => new RegExp(`^\\|switch\\|${other(side)}${pos}:`).test(l));
-        const happened = used ? `used ${used[1]}` : switched ? 'switched out' : 'did not visibly act (fainted, flinched, or blocked before moving)';
+        const who = `${other(side)}${pos}:`;
+        const cant = lines.map(l => (l.startsWith(`|cant|${who}`) ? l.split('|')[3] : null)).find(Boolean);
+        const fainted = lines.some(l => l.startsWith(`|faint|${who}`));
+        const why = cant ? ({flinch: 'flinched', par: 'fully paralyzed', slp: 'asleep', frz: 'frozen', recharge: 'recharging'}[cant] || `could not move (${cant.replace(/^(move|ability): /, '')})`) : fainted ? 'fainted before moving' : 'did not visibly act';
+        const happened = used ? `used ${used[1]}` : switched ? 'switched out' : why;
         const hit = used ? toID(used[1]) === toID(p.action) : switched && toID(p.action).startsWith('switch');
         predictionReview.push(`${p.foe} ${p.species}: you predicted ${p.action} (${Math.round(p.confidence * 100)}%) → ${happened}${used || switched ? (hit ? ' ✓' : ' ✗') : ''}`);
       }
@@ -603,9 +607,10 @@ export class Match extends EventEmitter {
     for (const g of done) {
       const res = g.winner === 'tie' || !g.winner ? 'tie' : g.winner === side ? 'you won' : 'you lost';
       const log = g.game.linesFor('spectator');
-      const oppSeen = [...new Set(log.filter(l => new RegExp(`^\\|(switch|drag)\\|${opp}[ab]:`).test(l)).map(l => l.split('|')[3].split(',')[0]))];
+      const oppSeen = [...new Set(log.filter(l => new RegExp(`^\\|(switch|drag)\\|${opp}[ab]:`).test(l)).map(l => teamName(l.split('|')[3].split(',')[0])))];
       L.push(`  Game ${g.n}: ${res} on turn ${g.game.turn}${g.forfeit ? ` (${g.forfeit === side ? 'you' : 'they'} forfeited)` : ''}. They brought ${oppSeen.join(', ') || 'nothing seen'}, leading ${oppSeen.slice(0, 2).join(' + ')}. You brought ${g.preview[side]?.bring.join(', ')}.`);
-      for (const [turn, acts] of opponentActions(log, opp)) L.push(`    T${turn}: ${acts.join(' · ')}`);
+      const acts = opponentActions(log, opp);
+      if (acts.length) L.push('    Their actions by turn:', ...acts.map(([turn, list]) => `      T${turn}: ${list.join(' · ')}`));
     }
     return L.join('\n');
   }
@@ -722,6 +727,14 @@ function sheetDex(sheet) {
 
 // The opponent's visible actions per turn of a finished game: moves with
 // targets, switches and Mega Evolution, from the public log.
+// The name a Pokémon has on its team sheet: Mega and other in-battle forms
+// count as the Pokémon they came from.
+function teamName(name) {
+  const sp = dex.species.get(name);
+  if (sp.isMega) return sp.baseSpecies;
+  return sp.battleOnly ? (Array.isArray(sp.battleOnly) ? sp.battleOnly[0] : sp.battleOnly) : sp.name;
+}
+
 function opponentActions(log, opp) {
   const out = [];
   let turn = 0;

@@ -137,7 +137,9 @@ export function describeLines(lines, viewer) {
     case 'move': {
       const via = p.find(x => x?.startsWith('[from]'));
       const how = !via ? '' : via === '[from] lockedmove' ? ' (continuing)' : ` (via ${via.slice(7).replace(/^(item|ability|move): /, '')})`;
-      out.push(`${who(p[1])} used ${p[2]}${p[3] && p[3] !== p[1] ? ` → ${who(p[3])}` : ''}${how}${p.includes('[miss]') ? ' (missed)' : ''}`);
+      // A spread move logs only its first target; the lines after it name everyone hit.
+      const spread = p.some(x => x?.startsWith('[spread]'));
+      out.push(`${who(p[1])} used ${p[2]}${spread ? ' (spread)' : p[3] && p[3] !== p[1] ? ` → ${who(p[3])}` : ''}${how}${p.includes('[miss]') ? ' (missed)' : ''}`);
       break;
     }
     case 'switch': case 'drag': out.push(`${who(p[1])} ${t === 'drag' ? 'was dragged in' : 'switched in'} (${p[2].split(',')[0]}, ${hp(p[3])})`); break;

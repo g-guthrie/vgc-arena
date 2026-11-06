@@ -64,7 +64,7 @@ tool_timeout_sec = 90
 node src/cli.mjs tools
 node src/cli.mjs arena_join '{"name":"DS","model":"deepseek-v4"}'
 node src/cli.mjs turn_submit - <<'JSON'
-{"seat":"seat_…","actions":{"slot1":"1b","slot2":"2h"},"mega":null,
+{"seat":"seat_…","actions":{"slot1":"1:fakeout>foe2","slot2":"2:protect"},"mega":null,
  "predictions":{"foe1":{"action":"Protect","confidence":0.6},"foe2":{"action":"Rock Slide","confidence":0.5}},"reason":"…"}
 JSON
 ```
@@ -147,7 +147,7 @@ You submit `bring` (4 Pokémon, first two lead) and `game_plan`.
 - for switches, every option's matchup against their actives (best hit each way, Speed order). A mid-turn pivot (U-turn, Parting Shot, Eject Button) is labeled as such, since the incoming Pokémon still takes this turn's hits;
 - status counters a player could keep (turns asleep, Toxic stage) and each foe's last move; accuracy on any move below 100% (weather applied), and whether a spread move currently hits one target or two;
 - **WEIGH BEFORE ANSWERING**: a short list of judgments for this kind of decision (move turn, replacement, pivot; every teambuilding question and team preview has its own). Players weigh them; they don't write about them;
-- **YOUR OPTIONS**: every legal action with a short ID, grouped by move, and an example answer.
+- **YOUR OPTIONS**: every legal action as an ID that names it (`1:moonblast>foe2`, `2:heatwave`, `1:switch>rotomwash`), one line per move, and the answer's shape.
 
 From game 2 on, team preview starts with how the last game ended and, for every finished game, what the opponent brought and did each turn (moves with targets, switches, Mega Evolution).
 

@@ -2,7 +2,7 @@
 // changes HARNESS_VERSION, and results across versions are not comparable.
 import {format} from './showdown.mjs';
 
-export const HARNESS_VERSION = 'vgc-arena/8';
+export const HARNESS_VERSION = 'vgc-arena/9';
 
 // The game: what every player gets, MCP or API.
 export const GAME_BRIEFING = `You are a player in VGC Arena: a best-of-3 Pokémon Champions VGC match (${format.name}) against another AI.
@@ -69,7 +69,7 @@ export const THINK = {
     "Each foe's most likely action this turn, given what threatens it and what it has done.",
     'Win conditions on both sides: what must survive, what must go now.',
     'Your biggest loss condition this turn, and whether your choice covers it.',
-    'Speed and priority this turn and next: who moves first, Tailwind / Trick Room turns left.',
+    'Speed and priority this turn and next: who moves first, Tailwind / Trick Room turns left, and that speed control used this turn (a Prankster Tailwind, Icy Wind) re-orders the rest of the same turn.',
     'Targeting: typing and immunities (Ghost vs Fake Out, Flying and Levitate vs Ground, Dark vs Prankster status), redirection, likely Protects, spread vs single, double-targeting.',
     'Resources: Mega Evolution, Fake Out, Protect, Intimidate cycling, berries and Focus Sash.',
     'Position after this turn: what you want on the field next turn.',

@@ -62,25 +62,25 @@ for (let guard = 0; guard < 400; guard++) {
     text = await call('preview_submit', {seat, bring: ['Hatterene', 'Indeedee-F', 'Kingambit', 'Tyranitar'], game_plan: 'Follow Me + Trick Room, then sweep with Kingambit and Tyranitar.'});
     continue;
   }
-  // Read YOUR OPTIONS exactly as a model would: first non-Protect option per slot,
-  // and the predictions from the example answer.
+  // Read YOUR OPTIONS as a model would: first non-Protect option per slot, no
+  // two slots sending the same Pokémon, and a "switch" prediction per foe.
   const menu = text.slice(text.indexOf('YOUR OPTIONS:'), text.indexOf('ANSWER with turn_submit:'));
   const opts = {};
   let slot = null;
   for (const line of menu.split('\n')) {
     const head = /^\s+slot(\d) /.exec(line);
     if (head) { slot = `slot${head[1]}`; opts[slot] = []; continue; }
-    const g = /^\s+(.+?): (.+)$/.exec(line);
-    if (g && slot) for (const o of g[2].split(' · ')) { const [id, ...rest] = o.split(' '); opts[slot].push({group: g[1], id, what: rest.join(' ')}); }
+    if (slot) opts[slot].push(...(line.match(/\d:[a-z0-9]+(>[a-z0-9]+)?/g) || []));
   }
   const used = new Set();
-  const actions = Object.fromEntries(Object.entries(opts).map(([k, list]) => {
-    const o = list.find(x => x.group !== 'Protect' && !(x.group === 'switch' && used.has(x.what))) || list[0];
-    if (o.group === 'switch') used.add(o.what);
-    return [k, o.id];
+  const actions = Object.fromEntries(Object.entries(opts).map(([k, ids]) => {
+    const id = ids.find(x => !x.endsWith(':protect') && !(x.includes(':switch>') && used.has(x.split('>')[1]))) || ids[0];
+    if (id.includes(':switch>')) used.add(id.split('>')[1]);
+    return [k, id];
   }));
-  const example = JSON.parse(text.slice(text.indexOf('ANSWER with turn_submit:') + 24).split('\n')[0]);
-  const payload = {seat, ...example, actions, reason: 'scripted'};
+  const answer = text.slice(text.indexOf('ANSWER with turn_submit:'));
+  const foes = [...answer.matchAll(/"(foe[12])"/g)].map(m => m[1]);
+  const payload = {seat, actions, predictions: Object.fromEntries(foes.map(f => [f, {action: 'switch', confidence: 0.5}])), reason: 'scripted'};
   text = await call('turn_submit', payload);
   decisions++;
   if (text.startsWith('REJECTED')) { console.log(text); throw new Error('scripted client got rejected'); }

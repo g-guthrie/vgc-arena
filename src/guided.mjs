@@ -20,6 +20,15 @@ function heldElsewhere(draft, i) {
   return draft.slots.map((s, j) => (s && j !== i && s.item ? `${dex.items.get(s.item).name} (${s.species})` : null)).filter(Boolean);
 }
 
+// "Garchompite Z" → "Garchompite Z (→ Garchomp-Mega-Z: Dragon/Ground, 108/…, Ability)".
+function megaNote(name) {
+  const item = dex.items.get(name);
+  if (!item.megaStone) return name;
+  const f = dex.species.get(Object.values(item.megaStone)[0]);
+  const b = f.baseStats;
+  return `${name} (→ ${f.name}: ${f.types.join('/')}, ${b.hp}/${b.atk}/${b.def}/${b.spa}/${b.spd}/${b.spe}, ${Object.values(f.abilities)[0]})`;
+}
+
 function itemsFor(draft, i) {
   const sp = dex.species.get(draft.slots[i].species);
   const used = new Set(draft.slots.map((s, j) => (s && j !== i && s.item ? toID(s.item) : null)).filter(Boolean));
@@ -56,7 +65,7 @@ export function question(draft) {
       prompt: `Complete ${sp.name}'s set: ability, item, nature, stat points (0–${SP_MAX_PER_STAT} per stat, ${SP_MAX_TOTAL} total) and ${need} moves. Base stats ${bs.hp}/${bs.atk}/${bs.def}/${bs.spa}/${bs.spd}/${bs.spe}; types ${sp.types.join('/')}.`,
       options: {
         abilities: abilities.map(a => `${a} — ${shortDesc(dex.abilities.get(a))}`),
-        items: items,
+        items: items.map(megaNote),
         heldElsewhere: heldElsewhere(draft, i),
         natures: NATURES().map(natureNote),
         moves: moves.map(m => `${m.name} (${m.type} ${m.category === 'Status' ? 'status' : `${m.basePower || '—'} ${m.category === 'Physical' ? 'phys' : 'spec'}`}${m.priority ? ` p${m.priority > 0 ? '+' : ''}${m.priority}` : ''}${['allAdjacentFoes', 'allAdjacent'].includes(m.target) ? ' spread' : ''})`),
