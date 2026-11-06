@@ -39,6 +39,8 @@ export class Match extends EventEmitter {
     this.score = {p1: 0, p2: 0, ties: 0};
     this.decisions = [];
     this.rejections = {p1: [], p2: []};
+    this.activity = [];
+    this.since = {p1: null, p2: null};
     this.events = [];
     this.winner = null;
     this.finishedAt = null;
@@ -226,6 +228,27 @@ export class Match extends EventEmitter {
     if (this.currentGame && !this.currentGame.ended) this.currentGame.forfeit(side);
     this.finish(other(side), `${this.seats[side].name} forfeited`);
     return {ok: true};
+  }
+
+  // What each player is doing with its tools, for the live "mind" panels.
+  noteActivity(token, tool, args, ok) {
+    let side;
+    try { side = this.sideOf(token); } catch { return; }
+    const {seat, ...a} = args || {};
+    const mon = t => String(t || '').split('\n')[0].split('@')[0].replace(/\(.*?\)/g, '').trim();
+    const act = x => (x.switch ? `↻ ${x.switch}` : `${x.move}${x.target ? `→${x.target}` : ''}${x.mega ? ' ✦' : ''}`);
+    const detail = {
+      pokemon: () => a.name, move: () => a.name, item: () => a.name, ability: () => a.name,
+      search_pokemon: () => Object.entries(a).map(([k, v]) => `${k} ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', '),
+      search_moves: () => Object.entries(a).map(([k, v]) => `${k} ${v}`).join(', '), search_items: () => a.query || 'all',
+      calc: () => `${mon(a.attacker)} ${a.move} → ${mon(a.defender)}`,
+      validate_team: () => `${String(a.team || '').split(/\n\s*\n/).filter(Boolean).length} Pokémon`,
+      team_submit: () => 'locks the team', preview_submit: () => (a.bring || []).join(' · '),
+      turn_submit: () => (a.actions || []).map(act).join(' · '), arena_forfeit: () => 'forfeits',
+    }[tool]?.() || '';
+    this.activity.push({side, tool, ok, detail, t: Date.now(), game: this.game?.n || 0, turn: this.currentGame?.turn || 0});
+    if (this.activity.length > 400) this.activity.splice(0, 100);
+    this.emit('change');
   }
 
   noteRejection(token, tool, error) {
@@ -450,6 +473,10 @@ export class Match extends EventEmitter {
   }
 
   publicView({reveal = false} = {}) {
+    for (const s of SIDES) {
+      const mine = this.seats[s] && this.phase !== 'finished' && this.phase !== 'waiting' && this.yourTurn(s);
+      this.since[s] = mine ? this.since[s] || Date.now() : null;
+    }
     const showTeams = SIDES.every(s => this.seats[s]?.team);
     const finished = this.phase === 'finished';
     return {
@@ -465,6 +492,10 @@ export class Match extends EventEmitter {
         rawLog: this.spectatorLines(g.n).join('\n'),
       })),
       events: this.events.slice(-50),
+      thinking: {p1: this.since.p1, p2: this.since.p2, now: Date.now()},
+      // Live research is shown as activity only; the details unlock at the end.
+      activity: this.activity.slice(-80).map(a => (finished || reveal ? a : {...a, detail: null})),
+      dex: showTeams ? sheetDex([...this.seats.p1.sheet, ...this.seats.p2.sheet]) : null,
       ...(finished || reveal ? {
         teams: showTeams ? {p1: this.seats.p1.teamText, p2: this.seats.p2.teamText} : null,
         teamPlans: {p1: this.seats.p1?.teamPlan, p2: this.seats.p2?.teamPlan},
@@ -513,6 +544,16 @@ export function displayNames(lines, seats) {
     if (l === '|win|Player 2') return `|win|${names.p2}`;
     return l;
   });
+}
+
+function sheetDex(sheet) {
+  const species = {}, moves = {};
+  for (const p of sheet) {
+    const sp = dex.species.get(p.species);
+    species[p.species] = {types: sp.types, bs: sp.baseStats, mega: (sp.otherFormes || []).map(f => dex.species.get(f)).filter(f => f.isMega).map(f => f.name)};
+    for (const m of p.moves) { const mv = dex.moves.get(m); moves[mv.name] = {type: mv.type, category: mv.category, bp: mv.basePower || 0}; }
+  }
+  return {species, moves};
 }
 
 function megaForm(p) {

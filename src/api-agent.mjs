@@ -132,7 +132,7 @@ export class ApiAgent {
         else if (SUBMITS.has(tc.function.name)) {
           out = await this.call(tc.function.name, {...args, seat: this.seat}, {noWait: true});
           if (!out.startsWith('REJECTED') && !out.startsWith('INVALID') && !out.startsWith('ERROR')) submitted = out;
-        } else out = await this.call(tc.function.name, args);
+        } else out = await this.call(tc.function.name, {...args, seat: this.seat});
         this.messages.push({role: 'tool', tool_call_id: tc.id, content: String(out).slice(0, 12000)});
         this.log(`${tc.function.name}${submitted ? ' ✓' : ''}`);
       }

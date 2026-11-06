@@ -8,6 +8,7 @@ import {transcript} from './artifacts.mjs';
 import {listModels} from './models.mjs';
 
 const seat = z.string().describe('Your seat token from arena_join. Keep it private.');
+const optSeat = z.string().optional().describe('Your seat token (optional; lets spectators see your research activity)');
 export const PUBLIC_URL = (process.env.VGC_PUBLIC_URL || `http://127.0.0.1:${process.env.PORT || 3170}`).replace(/\/$/, '');
 // Compact, model-friendly rendering of tool data (YAML-ish, short lists inline).
 function fmt(v, indent = '') {
@@ -69,7 +70,7 @@ export const TOOLS = [
       let roomLine = `ROOM ${match.room} · watch live: ${watch}`;
       if (match.reserved && match.phase === 'waiting') roomLine += `\nThis is a private room. Give your opponent the code ${match.room}; they join with arena_join room "${match.room}". Then call arena_wait.`;
       else if (match.phase === 'waiting') roomLine += `\nWaiting for a challenger${match.botFallbackAt ? ` (the greedy bot steps in at ${new Date(match.botFallbackAt).toISOString().slice(11, 19)} UTC if nobody comes)` : ''}. Call arena_wait.`;
-      return `SEAT TOKEN: ${token} — pass it as "seat" on every arena_*, team_submit, preview_submit and turn_submit call. Never share it.\n${roomLine}\nYou are ${side}. ${idLine}${flags.filter(f => f !== 'no-client-info').length ? ` Identity flags: ${flags.join(', ')}.` : ''}\nTell your user the room code and watch link now, then play.\n\n${arena.briefing()}\n\n${stateText(st)}`;
+      return `SEAT TOKEN: ${token} — pass it as "seat" on every tool call (dex lookups too, so spectators can watch your research). Never share it.\n${roomLine}\nYou are ${side}. ${idLine}${flags.filter(f => f !== 'no-client-info').length ? ` Identity flags: ${flags.join(', ')}.` : ''}\nTell your user the room code and watch link now, then play.\n\n${arena.briefing()}\n\n${stateText(st)}`;
     },
   },
   {
@@ -117,6 +118,7 @@ export const TOOLS = [
     name: 'search_pokemon',
     description: 'Search legal Pokémon in the format. Filters combine. Returns types, base stats, abilities and Mega forms.',
     input: {
+      seat: optSeat,
       query: z.string().optional().describe('Name substring'),
       type: z.union([z.string(), z.array(z.string())]).optional().describe('Type or types (all must match)'),
       ability: z.string().optional(),
@@ -131,27 +133,30 @@ export const TOOLS = [
   {
     name: 'pokemon',
     description: 'Full data for one Pokémon: types, base stats, abilities, level-50 stat ranges, every move it can legally use in this format, and Mega forms.',
-    input: {name: z.string()},
+    input: {
+      seat: optSeat,name: z.string()},
     async run(_, args) { return fmt(dexTools.pokemon(args)); },
   },
   {
     name: 'search_moves',
     description: 'Search moves (optionally only those a given Pokémon can learn).',
     input: {
+      seat: optSeat,
       query: z.string().optional(), type: z.string().optional(), category: z.string().optional().describe('Physical, Special or Status'),
       min_power: z.number().optional(), priority: z.boolean().optional(), spread: z.boolean().optional().describe('Only moves that hit multiple targets'),
       learnable_by: z.string().optional(), limit: z.number().optional(),
     },
     async run(_, args) { return fmt(dexTools.searchMoves(args)); },
   },
-  {name: 'move', description: 'Exact data for one move in this format (Champions PP, priority, target, effect).', input: {name: z.string()}, async run(_, a) { return fmt(dexTools.move(a)); }},
-  {name: 'search_items', description: 'List legal held items (optionally filtered).', input: {query: z.string().optional(), limit: z.number().optional()}, async run(_, a) { return fmt(dexTools.searchItems(a)); }},
-  {name: 'item', description: 'Exact effect of one item.', input: {name: z.string()}, async run(_, a) { return fmt(dexTools.item(a)); }},
-  {name: 'ability', description: 'Exact effect of one ability.', input: {name: z.string()}, async run(_, a) { return fmt(dexTools.ability(a)); }},
+  {name: 'move', description: 'Exact data for one move in this format (Champions PP, priority, target, effect).', input: {seat: optSeat, name: z.string()}, async run(_, a) { return fmt(dexTools.move(a)); }},
+  {name: 'search_items', description: 'List legal held items (optionally filtered).', input: {seat: optSeat, query: z.string().optional(), limit: z.number().optional()}, async run(_, a) { return fmt(dexTools.searchItems(a)); }},
+  {name: 'item', description: 'Exact effect of one item.', input: {seat: optSeat, name: z.string()}, async run(_, a) { return fmt(dexTools.item(a)); }},
+  {name: 'ability', description: 'Exact effect of one ability.', input: {seat: optSeat, name: z.string()}, async run(_, a) { return fmt(dexTools.ability(a)); }},
   {
     name: 'calc',
     description: 'Damage calculator backed by the battle simulator. attacker/defender are Showdown-format sets (species @ item, Ability:, EVs: <stat points>, Nature, moves). Returns % range, HP range and KO verdict.',
     input: {
+      seat: optSeat,
       attacker: z.string(), defender: z.string(), move: z.string(),
       field: z.object({
         weather: z.string().optional().describe('sunnyday, raindance, sandstorm, snowscape'),
@@ -169,7 +174,8 @@ export const TOOLS = [
   {
     name: 'validate_team',
     description: 'Check a team against the format without submitting it. Returns problems, or computed stats for each Pokémon.',
-    input: {team: z.string().describe('Showdown export text for all 6')},
+    input: {
+      seat: optSeat,team: z.string().describe('Showdown export text for all 6')},
     async run(_, a) { const v = dexTools.validateTeam(a); return fmt({ok: v.ok, problems: v.problems, summary: v.ok ? v.summary : undefined}); },
   },
   {
@@ -226,9 +232,14 @@ export async function runTool(arena, name, args = {}, ctx = {}) {
   if (!parsed.success) {
     return `INVALID ARGUMENTS for ${name}: ${parsed.error.issues.map(i => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`;
   }
+  let out;
   try {
-    return await tool.run(arena, parsed.data, ctx);
+    out = await tool.run(arena, parsed.data, ctx);
   } catch (err) {
-    return `ERROR: ${err.message}`;
+    out = `ERROR: ${err.message}`;
   }
+  if (parsed.data.seat && !['arena_wait', 'arena_state', 'arena_join'].includes(name)) {
+    try { arena.matchFor(parsed.data.seat).noteActivity(parsed.data.seat, name, parsed.data, !/^(REJECTED|ERROR|INVALID)/.test(out) && !/ok: false/.test(out)); } catch {}
+  }
+  return out;
 }
