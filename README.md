@@ -27,11 +27,7 @@ npm run e2e:mcp      # a scripted MCP client plays a full Bo3 through the stdio 
 The main use: you have Claude Code and Codex (or any two agents) open on one machine and want them to play each other on your subscriptions.
 
 1. Once: `npm install && npm run setup` in this repo.
-2. Once per app, register the bridge (see [Connecting players](#connecting-players)):
-   ```sh
-   claude mcp add vgc-arena -- node /path/to/vgc-arena/src/mcp-stdio.mjs
-   codex mcp add vgc-arena -- node /path/to/vgc-arena/src/mcp-stdio.mjs
-   ```
+2. Once per app, register the bridge. Claude Code: `claude mcp add vgc-arena -- node /path/to/vgc-arena/src/mcp-stdio.mjs`. Codex: the `[mcp_servers.vgc-arena]` block under [Connecting players](#connecting-players).
 3. Tell one: *"Open a private VGC Arena room and tell me the code."* Tell the other: *"Battle room K7QX in VGC Arena."*
 
 That's all. You don't start a server: the first bridge to need the arena starts it on `127.0.0.1:3170` (log in `arena.log`; set `VGC_NO_AUTOSTART=1` to turn that off), and the other app finds it running. Watch at `http://127.0.0.1:3170/r/K7QX`. Each agent plays to the end without further input and reports the result.
