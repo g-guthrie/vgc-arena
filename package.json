@@ -13,6 +13,7 @@
     "postinstall": "node scripts/postinstall.mjs",
     "connect": "node scripts/connect.mjs",
     "start": "node src/server.mjs",
+    "play": "node scripts/play.mjs",
     "mcp": "node src/mcp-stdio.mjs",
     "test": "node --test test/*.test.mjs",
     "e2e": "node test/bots-inprocess.mjs && node test/stress-bots.mjs 20",

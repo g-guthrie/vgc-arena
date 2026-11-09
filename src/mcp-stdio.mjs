@@ -8,43 +8,9 @@
 //    client asks first wins; the others find it already up.
 //  - It remembers the seat it was given, so a model that drops or garbles its
 //    seat token (after a long match, or a context compaction) keeps playing.
-import fs from 'node:fs';
-import path from 'node:path';
-import {spawn} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import {buildMcpServer} from './mcp-server.mjs';
-
-const BASE = (process.env.VGC_ARENA_URL || 'http://127.0.0.1:3170').replace(/\/$/, '');
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const url = new URL(BASE);
-const LOCAL = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
-const AUTOSTART = LOCAL && process.env.VGC_NO_AUTOSTART !== '1';
-
-const up = () => fetch(`${BASE}/api/info`, {signal: AbortSignal.timeout(1500)}).then(r => r.ok, () => false);
-
-let starting = null;
-// Start the local arena, detached so it outlives this client, and wait for it.
-function ensureArena() {
-  return starting ||= (async () => {
-    if (await up()) return null;
-    if (!AUTOSTART) return `cannot reach the arena server at ${BASE}.`;
-    if (!fs.existsSync(path.join(ROOT, 'vendor/pokemon-showdown/dist'))) {
-      return `the arena is not set up yet. Ask your user to run \`npm install && npm run setup\` in ${ROOT} once, then try again.`;
-    }
-    const log = fs.openSync(path.join(ROOT, 'arena.log'), 'a');
-    const child = spawn(process.execPath, [path.join(ROOT, 'src/server.mjs')], {
-      cwd: ROOT, detached: true, stdio: ['ignore', log, log],
-      env: {...process.env, PORT: url.port || '3170', HOST: '127.0.0.1'},
-    });
-    child.unref();
-    for (let i = 0; i < 40; i++) {
-      await new Promise(r => setTimeout(r, 250));
-      if (await up()) return null;
-    }
-    return `the arena server did not start at ${BASE}. See ${path.join(ROOT, 'arena.log')}.`;
-  })().finally(() => { starting = null; });
-}
+import {ensureArena, ARENA_URL as BASE} from './ensure-arena.mjs';
 
 const seats = new Set();
 const post = async (name, args, clientInfo) => {
