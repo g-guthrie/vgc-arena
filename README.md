@@ -19,7 +19,27 @@ npm run setup        # clones + builds the pinned Pokemon Showdown simulator
 npm start            # http://127.0.0.1:3170  (spectator UI, /mcp, /api)
 npm test             # fairness, menu, teambuilding, clocks, forfeits, identity, predictions, speed inference, ratings
 npm run e2e          # bot vs bot full Bo3 in-process
+npm run e2e:mcp      # a scripted MCP client plays a full Bo3 through the stdio bridge
 ```
+
+## Benchmark two subscriptions
+
+The main use: you have Claude Code and Codex (or any two agents) open on one machine and want them to play each other on your subscriptions.
+
+1. Once: `npm install && npm run setup` in this repo.
+2. Once per app, register the bridge (see [Connecting players](#connecting-players)):
+   ```sh
+   claude mcp add vgc-arena -- node /path/to/vgc-arena/src/mcp-stdio.mjs
+   codex mcp add vgc-arena -- node /path/to/vgc-arena/src/mcp-stdio.mjs
+   ```
+3. Tell one: *"Open a private VGC Arena room and tell me the code."* Tell the other: *"Battle room K7QX in VGC Arena."*
+
+That's all. You don't start a server: the first bridge to need the arena starts it on `127.0.0.1:3170` (log in `arena.log`; set `VGC_NO_AUTOSTART=1` to turn that off), and the other app finds it running. Watch at `http://127.0.0.1:3170/r/K7QX`. Each agent plays to the end without further input and reports the result.
+
+What keeps an unattended match from stalling:
+- **The bridge remembers the seat.** A model that drops or garbles its seat token, which happens after a long match or a context compaction, keeps playing.
+- **Clocks, not hangs.** An agent that stops answering loses the game after 10 minutes and the match on the second timeout, so the other agent always gets a result.
+- **Answers are exact or refused.** Every decision lists its legal answers; a wrong one changes nothing and says what the options are.
 
 ## Play with an API key
 
@@ -40,7 +60,7 @@ The simplest way in: open the site's **Play** page, pick OpenAI or OpenRouter, p
 Every interface exposes the same 21 tools (`arena_join`, `arena_wait`,
 `draft_answer`, `preview_submit`, `turn_submit`, the dex tools, `calc`, …).
 
-**Claude Code.** This repo's `.mcp.json` registers the stdio bridge. Or, from any directory:
+**Claude Code.** This repo's `.mcp.json` registers the stdio bridge (which starts the arena itself if it isn't running). Or, from any directory:
 
 ```sh
 claude mcp add vgc-arena -- node /path/to/vgc-arena/src/mcp-stdio.mjs
@@ -133,7 +153,7 @@ trust, or audit their transcripts.
 3–8. one complete set per Pokémon: ability, item, nature, stat points and moves;
 9. team plan, which locks the team (Showdown's validator is the final check).
 
-Each question lists its legal options and carries a JSON schema whose enums are exactly the legal answers (`decision_schema`). Every answer to `draft_answer` is checked on the spot, and errors come with legal alternatives, for example: "Incineroar can't learn Knock Off in Champions. Legal Dark physical moves: …". `draft_revise({slot})` reopens a set; `draft_revise({slot, species})` swaps the Pokémon. Every reply shows the full board, a factual team report (types, shared weaknesses, speed, roles such as speed control, Fake Out, redirection and Intimidate, and Megas) and the research budget.
+Each question lists its legal options and carries a JSON schema whose enums are exactly the legal answers (`decision_schema`). Every answer to `draft_answer` is checked on the spot. In a set answer each field is checked on its own: the legal ones go on the board, and the question comes back asking only for the rest, so one bad move name doesn't cost the ability, item, nature and spread sent with it. Errors come with legal alternatives, for example: "Incineroar can't learn Knock Off in Champions. Legal Dark physical moves: …". `draft_revise({slot})` reopens a set; `draft_revise({slot, species})` swaps the Pokémon. Every reply shows the full board, a factual team report (types, shared weaknesses, speed, roles such as speed control, Fake Out, redirection and Intimidate, and Megas) and the research budget.
 
 Research tools are compact by default (`pokemon` lists attacks and key support moves; `full: true` gives everything; `search_items` hides Mega Stones unless asked). Models never have to remember their own team.
 

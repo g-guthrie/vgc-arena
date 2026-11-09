@@ -22,3 +22,8 @@ jobs:
       - run: npm run setup
       - run: npm test
       - run: npm run e2e
+      - name: MCP bridge end to end (starts the arena itself)
+        run: npm run e2e:mcp
+        env:
+          VGC_ARENA_URL: http://127.0.0.1:3197
+          VGC_ARTIFACTS: ${{ runner.temp }}/arena

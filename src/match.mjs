@@ -9,7 +9,7 @@ import {Game, describeLines} from './game.mjs';
 import {renderObservation, choiceFromAnswer, predictionEnum} from './observation.mjs';
 import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION, thinkText} from './briefing.mjs';
 import {resolveModel, connectionPath} from './models.mjs';
-import {newDraft, setSlot, boardText, lockCheck, boardSummary} from './draft.mjs';
+import {newDraft, setSlot, boardText, lockCheck, boardSummary, SET_FIELDS} from './draft.mjs';
 import {question, questionText} from './guided.mjs';
 import {watchSpeedOrder, applySpeedConstraints} from './speed-infer.mjs';
 import {displayName, displayNames, sheetDex, teamName, opponentActions, rangesLine, chosenLabel, predictionHit} from './match-text.mjs';
@@ -235,7 +235,7 @@ export class Match extends EventEmitter {
     if (d.error) return d;
     const draft = d.seat.draft;
     const q = question(draft);
-    const need = {concept: ['concept'], species: ['species'], set: ['ability', 'item', 'nature', 'sp', 'moves'], lock: ['team_plan']}[q.step];
+    const need = {concept: ['concept'], species: ['species'], set: q.fields, lock: ['team_plan']}[q.step];
     const missing = need.filter(k => args[k] === undefined || args[k] === null || args[k] === '');
     if (missing.length) return {error: `This question (${q.title}) needs: ${missing.join(', ')}.`, question: q};
     let r;
@@ -257,7 +257,18 @@ export class Match extends EventEmitter {
       }
       this.emit('change');
       r = {ok: true};
-    } else r = this.draftSet(token, {slot: q.slot, ...Object.fromEntries(need.map(k => [k, args[k]]))});
+    } else {
+      // Field by field: what is legal goes on the board, what is not is
+      // reported, and the question comes back asking only for the rest.
+      const kept = [], errors = [];
+      for (const k of SET_FIELDS) {
+        if (args[k] === undefined || args[k] === null || args[k] === '') continue;
+        const res = setSlot(draft, {slot: q.slot, [k]: args[k]});
+        if (res.error) errors.push(res.error); else kept.push(k);
+      }
+      this.emit('change');
+      r = errors.length ? {error: errors.join(' '), kept} : {ok: true};
+    }
     if (r.error) return {...r, question: q};
     return {ok: true, locked: q.step === 'lock'};
   }

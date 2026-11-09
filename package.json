@@ -14,6 +14,7 @@
     "mcp": "node src/mcp-stdio.mjs",
     "test": "node --test test/*.test.mjs",
     "e2e": "node test/bots-inprocess.mjs && node test/stress-bots.mjs 20",
+    "e2e:mcp": "node test/mcp-e2e.mjs stdio",
     "ratings": "node src/ratings.mjs",
     "agent": "node src/api-agent.mjs"
   },

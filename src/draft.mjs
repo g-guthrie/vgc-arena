@@ -137,6 +137,13 @@ export function slotMissing(s) {
   return miss;
 }
 
+// The same thing as answer fields, in the order they are asked.
+export const SET_FIELDS = ['ability', 'item', 'nature', 'sp', 'moves'];
+export function missingFields(s) {
+  const need = Math.min(4, legalMoves(dex.species.get(s.species)).length);
+  return SET_FIELDS.filter(k => (k === 'sp' ? !s.spSet : k === 'moves' ? s.moves.length < need : !s[k]));
+}
+
 function toSet(s) {
   return {species: s.species, name: '', item: s.item, ability: s.ability, nature: s.nature || 'Serious', evs: Object.fromEntries(STATS.map(k => [k, s.sp[k] || 0])), ivs: Object.fromEntries(STATS.map(k => [k, 31])), moves: s.moves, level: 50, gender: ''};
 }

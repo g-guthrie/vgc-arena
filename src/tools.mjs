@@ -191,7 +191,7 @@ export const TOOLS = [
   // ---------------------------------------------------------------- the draft board
   {
     name: 'draft_answer',
-    description: 'Answer the current teambuilding question (QUESTION n of 9). Send only the fields that question asks for: concept; species (all six); a full set (ability, item, nature, sp, moves); or team_plan to lock. Returns the board and the next question.',
+    description: 'Answer the current teambuilding question (QUESTION n of 9). Send only the fields that question asks for: concept; species (all six); a set (ability, item, nature, sp, moves); or team_plan to lock. In a set, every legal field is kept and only the rest is asked again. Returns the board and the next question.',
     input: {
       seat,
       concept: z.string().optional(), species: z.array(z.string()).optional().describe('question 2: all six species'), ability: z.string().optional(), item: z.string().optional(),
@@ -202,6 +202,10 @@ export const TOOLS = [
     async run(arena, a, ctx) {
       const m = arena.matchFor(a.seat);
       const res = m.draftAnswer(a.seat, a);
+      if (res.error && res.kept?.length) {
+        const lead = `PARTLY APPLIED — on the board now: ${res.kept.join(', ')}. Not applied: ${res.error}`;
+        return ctx?.noWait ? lead : `${lead}\n\n${m.guidedText(a.seat)}`;
+      }
       if (res.error) return notApplied(m, a.seat, res.error);
       if (res.locked) return afterSubmit(arena, a.seat, res, 'Team locked.', 'draft_answer', ctx);
       return ctx?.noWait ? 'Answer recorded.' : m.guidedText(a.seat);

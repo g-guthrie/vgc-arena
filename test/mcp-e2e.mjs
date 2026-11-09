@@ -1,6 +1,7 @@
 // End-to-end: a scripted MCP client plays a full best-of-3 against the greedy
 // bot through a real transport, reading only the text a model would read.
-//   node test/mcp-e2e.mjs stdio    (spawns src/mcp-stdio.mjs; server must be running)
+//   node test/mcp-e2e.mjs stdio    (spawns src/mcp-stdio.mjs, which starts the arena if it is not running;
+//                                   after joining, the client never sends its seat: the bridge remembers it)
 //   node test/mcp-e2e.mjs http     (talks to http://127.0.0.1:3170/mcp)
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,7 +25,9 @@ const tools = (await client.listTools()).tools.map(t => t.name);
 console.log(`[${mode}] tools:`, tools.join(', '));
 
 let text = await call('arena_join', {name: `e2e-${mode}`, model: 'scripted', harness: `mcp-${mode}`, vs_bot: 'greedy'});
-const seat = /SEAT TOKEN: (\S+)/.exec(text)[1];
+// Over stdio the bridge holds the seat, so a model that loses its token keeps playing.
+const seat = mode === 'stdio' ? undefined : /SEAT TOKEN: (\S+)/.exec(text)[1];
+if (!/SEAT TOKEN: \S+/.test(text)) throw new Error(`join failed: ${text.slice(0, 300)}`);
 // Guided teambuilding, answered from a sample team file.
 const STAT = {HP: 'hp', Atk: 'atk', Def: 'def', SpA: 'spa', SpD: 'spd', Spe: 'spe'};
 const sets = fs.readFileSync(path.join(ROOT, 'teams/sample-room.txt'), 'utf8').trim().split(/\n\s*\n/).map(block => {
@@ -48,8 +51,15 @@ text = await answer({concept: 'Trick Room: Hatterene/Sinistcha set it, Kingambit
 const bad = await call('draft_answer', {seat, species: ['Notamon', ...sets.slice(1).map(s => s.species)]});
 if (!bad.startsWith('NOT APPLIED') || !/QUESTION 2 of 9/.test(bad)) throw new Error(`expected a refusal, got: ${bad.slice(0, 200)}`);
 text = await answer({species: sets.map(s => s.species)});
-for (const s of sets) {
+for (const [i, s] of sets.entries()) {
   if (!new RegExp(`Set for ${s.species}`).test(text)) throw new Error(`expected the set question for ${s.species}, got: ${text.slice(-400)}`);
+  if (i === 0) {
+    // One illegal field: the legal ones stay on the board and only the moves are asked again.
+    const part = await call('draft_answer', {seat, ability: s.ability, item: s.item, nature: s.nature, sp: s.sp, moves: ['Notamove', ...s.moves.slice(1)]});
+    if (!part.startsWith('PARTLY APPLIED') || !/Still needed: \d moves\./.test(part) || /Natures:/.test(part)) throw new Error(`expected a partial answer to keep the legal fields, got: ${part.slice(0, 600)}`);
+    text = await answer({moves: s.moves});
+    continue;
+  }
   text = await answer({ability: s.ability, item: s.item, nature: s.nature, sp: s.sp, moves: s.moves});
 }
 text = await answer({team_plan: 'Hatterene and Sinistcha set Trick Room behind Indeedee; Kingambit and Tyranitar sweep under it.'});
