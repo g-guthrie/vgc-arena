@@ -7,7 +7,9 @@ import path from 'node:path';
 import {Arena} from '../src/arena.mjs';
 import {StatsDB} from '../src/db.mjs';
 import {runTool} from '../src/tools.mjs';
-import {newMatch, toPreview, toBattle, playUntil} from './helpers.mjs';
+import {Stats} from '../src/stats.mjs';
+import {createServer} from '../src/server.mjs';
+import {newMatch, toPreview, toBattle, playUntil, simpleAnswer, SUN, ROOM} from './helpers.mjs';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'vgc-test-'));
 const memDb = () => new StatsDB(':memory:');
@@ -154,4 +156,88 @@ test('each seat records how it is connected', () => {
   assert.equal(m.seats.p1.path, 'mcp');
   assert.equal(m.seats.p2.path, 'api');
   assert.equal(m.publicView().players[1].path, 'api');
+});
+
+test('forfeiting the match awards the opponent every game still needed, and the ratings count them', () => {
+  const arena = new Arena({artifactsDir: tmp(), db: memDb(), tickMs: 0});
+  const {match, token} = arena.join({name: 'A', model: 'claude-opus-5-5', match_id: arena.createMatch({label: 'ff'}).id}, {});
+  arena.join({name: 'B', model: 'claude-sonnet-5-5', match_id: match.id}, {});
+  assert.equal(match.phase, 'teambuilding');
+  match.forfeit(token, {scope: 'game'}); // nothing smaller than the match to concede yet
+  assert.equal(match.phase, 'finished');
+  assert.deepEqual([match.score.p1, match.score.p2], [0, 2]);
+  assert.equal(match.awarded.length, 2);
+  assert.match(match.stateFor(token).text, /You LOST the match 0–2 \(you forfeited the match\)/);
+  const rows = arena.db.all('select n, winner, awarded from games where match_id = ? order by n', match.id);
+  assert.deepEqual(rows.map(r => [r.n, r.winner, r.awarded]), [[1, 'p2', 1], [2, 'p2', 1]]);
+  const stats = new Stats(arena.db);
+  const lb = stats.leaderboard({boot: 0});
+  assert.equal(lb.games, 2);
+  assert.deepEqual(lb.rows.map(r => [r.model, r.w, r.l]), [['claude-sonnet-5-5', 2, 0], ['claude-opus-5-5', 0, 2]]);
+  assert.equal(stats.summary().games, 0, 'awarded games are not played games');
+  arena.close();
+});
+
+test('a match forfeit mid-set awards only the games still missing', () => {
+  const {m, a, b} = toBattle();
+  m.forfeit(b, {scope: 'game'});          // p1 leads 1–0
+  m.forfeit(a);                           // p1 walks away in game 2
+  assert.equal(m.winner, 'p2');
+  assert.deepEqual([m.score.p1, m.score.p2], [1, 2]);
+  assert.deepEqual(m.awarded.map(g => g.n), [3]);
+  assert.equal(m.artifact().awardedGames.length, 1);
+});
+
+test('leaving a room before anyone joins abandons it instead of recording a win', () => {
+  const arena = new Arena({artifactsDir: tmp(), db: memDb(), tickMs: 0, retainMs: 0});
+  const {match, token} = arena.join({name: 'A', model: 'a', room: 'new'}, {});
+  match.forfeit(token);
+  assert.ok(match.abandoned);
+  assert.equal(arena.db.get('select count(*) n from matches').n, 0);
+  arena.close();
+});
+
+test('nobody can join as a baseline bot or claim to be builtin', () => {
+  const arena = new Arena({artifactsDir: tmp(), db: memDb(), tickMs: 0});
+  assert.throws(() => arena.join({name: 'x', model: 'builtin:greedy', room: 'new'}, {}), /baseline bots/);
+  const {match, side} = arena.join({name: 'x', model: 'claude-opus-5-5', harness: 'builtin', room: 'new'}, {client: {via: 'http'}});
+  assert.equal(match.seats[side].builtin, false);
+  assert.equal(match.seats[side].path, 'http');
+  // A harness name alone does not put a seat on the API path.
+  const spoof = arena.join({name: 'y', model: 'claude-opus-5-5', harness: 'api:openai', room: 'new'}, {client: {via: 'http'}});
+  assert.equal(spoof.match.seats[spoof.side].path, 'http');
+  arena.close();
+});
+
+test('a submitted turn shows in the activity feed without the choice', () => {
+  const {m, a} = toBattle();
+  m.noteActivity(a, 'turn_submit', {seat: a, ...simpleAnswer(m, 'p1')}, true);
+  const act = m.activity.at(-1);
+  assert.equal(act.tool, 'turn_submit');
+  assert.equal(act.detail, 'locks in the turn');
+});
+
+test('noWait submits acknowledge without rendering the next state', async () => {
+  const arena = new Arena({artifactsDir: tmp(), db: memDb(), tickMs: 0});
+  const m = arena.createMatch({label: 'nw', fixedTeams: {p1: SUN, p2: ROOM}});
+  const {token} = arena.join({name: 'A', model: 'a', match_id: m.id}, {});
+  arena.join({name: 'B', model: 'b', match_id: m.id}, {});
+  const out = await runTool(arena, 'preview_submit', {seat: token, bring: ['Charizard', 'Whimsicott', 'Incineroar', 'Garchomp'], game_plan: 'x'}, {noWait: true});
+  assert.equal(out, 'Preview locked in.');
+  arena.close();
+});
+
+test('the server refuses oversized bodies and a forged hosted-agent marker', async () => {
+  const server = createServer({arena: new Arena({artifactsDir: tmp(), db: memDb(), tickMs: 0})});
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (p, body, headers = {}) => fetch(base + p, {method: 'POST', headers: {'content-type': 'application/json', ...headers}, body: JSON.stringify(body)});
+  const big = await post('/api/tools/arena_state', {seat: 'x', pad: 'A'.repeat(400 * 1024)});
+  assert.equal(big.status, 413);
+  const join = await post('/api/tools/arena_join', {model: 'claude-opus-5-5', room: 'new'}, {'x-vgc-client': JSON.stringify({via: 'arena-api', name: 'arena-api/openai'})});
+  const seat = /SEAT TOKEN: (\S+)/.exec((await join.json()).text)[1];
+  const m = server.arena.matchFor(seat);
+  assert.equal(m.seats.p1.path, 'http');
+  assert.ok(!m.seats.p1.flags.includes('verified-api'));
+  await new Promise(r => server.close(r));
 });

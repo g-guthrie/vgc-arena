@@ -51,7 +51,7 @@ export class Stats {
     return this.memo('summary', () => {
       const d = this.db;
       const m = d.get(`select count(*) n, max(finished_at) last from matches where rated = 1`);
-      const g = d.get(`select count(*) n, coalesce(sum(turns),0) turns from games g join matches m on m.id = g.match_id where m.rated = 1`);
+      const g = d.get(`select count(*) n, coalesce(sum(turns),0) turns from games g join matches m on m.id = g.match_id where m.rated = 1 and coalesce(g.awarded, 0) = 0`);
       const models = d.get(`select count(distinct model_id) n from seats where listed = 1 and provider != 'arena'`);
       const owners = d.get(`select count(distinct owner) n from seats where owner != ''`);
       const species = d.get(`select count(distinct species) n from team_mons`);
@@ -156,7 +156,7 @@ export class Stats {
       const teams = this.db.get(`select count(*) n from seats s join matches m on m.id = s.match_id and m.rated = 1 where s.provider != 'arena' ${filter}`, ...args).n;
       const mons = this.db.all(`
         select t.species, count(*) teams,
-          sum((select count(*) from games g where g.match_id = t.match_id)) games_available,
+          sum((select count(*) from games g where g.match_id = t.match_id and coalesce(g.awarded, 0) = 0)) games_available,
           sum((select count(*) from brings b where b.match_id = t.match_id and b.side = t.side and b.species = t.species)) brought,
           sum((select count(*) from brings b where b.match_id = t.match_id and b.side = t.side and b.species = t.species and b.lead = 1)) leads,
           sum((select coalesce(sum(b.won),0) from brings b where b.match_id = t.match_id and b.side = t.side and b.species = t.species)) wins

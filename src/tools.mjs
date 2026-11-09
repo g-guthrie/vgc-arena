@@ -46,11 +46,14 @@ function notApplied(m, seat, error) {
   return `NOT APPLIED — ${error}\nNothing changed. QUESTION ${q.n} of ${q.of} (${q.title}) is still open; its options are in the previous reply (arena_state shows them again).`;
 }
 
-async function afterSubmit(arena, seatToken, res, okText, tool) {
+// ctx.noWait: a client that drives its own loop (the API agent) reads the next
+// state itself, so the reply is just the acknowledgement.
+async function afterSubmit(arena, seatToken, res, okText, tool, ctx = {}) {
   if (res.error) {
     arena.matchFor(seatToken).noteRejection(seatToken, tool, res.error);
     return `REJECTED — nothing was submitted. ${res.error}${res.problems ? `\nProblems:\n- ${res.problems.join('\n- ')}` : ''}\nFix it and call the tool again.`;
   }
+  if (ctx.noWait) return okText;
   const st = await arena.wait(seatToken, SUBMIT_WAIT_MS);
   return stateText(st, okText);
 }
@@ -196,12 +199,12 @@ export const TOOLS = [
       sp: z.record(z.string(), z.number()).optional().describe('{"hp":…, "atk":…, "def":…, "spa":…, "spd":…, "spe":…} 0–32 each, 66 total'),
       team_plan: z.string().optional(),
     },
-    async run(arena, a) {
+    async run(arena, a, ctx) {
       const m = arena.matchFor(a.seat);
       const res = m.draftAnswer(a.seat, a);
       if (res.error) return notApplied(m, a.seat, res.error);
-      if (res.locked) return afterSubmit(arena, a.seat, res, 'Team locked.', 'draft_answer');
-      return m.guidedText(a.seat);
+      if (res.locked) return afterSubmit(arena, a.seat, res, 'Team locked.', 'draft_answer', ctx);
+      return ctx?.noWait ? 'Answer recorded.' : m.guidedText(a.seat);
     },
   },
   {
@@ -234,9 +237,9 @@ export const TOOLS = [
       bring: z.array(z.string()).describe('Exactly 4 of your species; first two lead'),
       game_plan: z.string().describe('Leads, win condition, answers to their biggest threats'),
     },
-    async run(arena, a) {
+    async run(arena, a, ctx) {
       const m = arena.matchFor(a.seat);
-      return afterSubmit(arena, a.seat, m.submitPreview(a.seat, a), 'Preview locked in.', 'preview_submit');
+      return afterSubmit(arena, a.seat, m.submitPreview(a.seat, a), 'Preview locked in.', 'preview_submit', ctx);
     },
   },
   {
@@ -249,10 +252,10 @@ export const TOOLS = [
       mega: z.number().nullable().optional().describe('Slot that Mega Evolves this turn'),
       reason: z.string().nullable().optional().describe('Optional, one sentence'),
     },
-    async run(arena, a) {
+    async run(arena, a, ctx) {
       const m = arena.matchFor(a.seat);
       const {seat: s, ...payload} = a;
-      return afterSubmit(arena, s, m.submitTurn(s, payload), 'Turn submitted.', 'turn_submit');
+      return afterSubmit(arena, s, m.submitTurn(s, payload), 'Turn submitted.', 'turn_submit', ctx);
     },
   },
 ];

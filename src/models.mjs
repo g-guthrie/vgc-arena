@@ -49,11 +49,15 @@ export function detectHarness(clientName, userAgent) {
 // How a seat is driven. Agents on different paths play under different
 // conditions (an MCP agent keeps its whole set in context; the hosted API
 // agent sees mostly the current decision), so the leaderboard can split on it.
-export function connectionPath(harness, client = {}) {
+// `builtin` is set only by the arena itself, and `via: "arena-api"` only by the
+// hosted agent (the server refuses that value from a request header), so
+// neither can be claimed by a player. The free-text harness name never decides
+// the path on its own, except to say "mcp".
+export function connectionPath(harness, client = {}, builtin = false) {
   const h = String(harness || '').toLowerCase();
   const via = String(client.via || '').toLowerCase();
-  if (h === 'builtin') return 'builtin';
-  if (h.startsWith('api:') || via === 'arena-api' || via === 'api-agent') return 'api';
+  if (builtin) return 'builtin';
+  if (via === 'arena-api' || via === 'api-agent') return 'api';
   if (via === 'mcp-stdio' || via === 'mcp-http' || h.startsWith('mcp')) return 'mcp';
   if (via === 'cli') return 'cli';
   return 'http';

@@ -11,7 +11,7 @@ import {format} from './showdown.mjs';
 // what a player reads (briefing, observation, teambuilding questions, log
 // prose), so an edit to any of them changes the version without anyone having
 // to remember.
-const HARNESS_BASE = 'vgc-arena/11';
+const HARNESS_BASE = 'vgc-arena/12';
 const PLAYER_FACING = ['briefing.mjs', 'observation.mjs', 'guided.mjs', 'draft.mjs', 'game.mjs', 'calc.mjs', 'speed-infer.mjs'];
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sourceHash = crypto.createHash('sha256');

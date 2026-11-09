@@ -24,6 +24,10 @@ const HIDDEN = new Set(['arena_join', 'arena_wait', 'arena_state', 'arena_forfei
   'draft_revise', 'draft_question', 'draft_answer', 'decision_schema', 'preview_submit', 'turn_submit']);
 const MAX_CALLS = 12;     // per decision, research included
 const KEEP_PRIOR = 4;     // messages kept from before the current decision
+// Spending caps for one match. Dollars where the provider reports cost
+// (OpenRouter); tokens (input + output) where it does not (OpenAI).
+const MAX_USD = Number(process.env.VGC_API_MAX_USD || 3);
+const MAX_TOKENS = Number(process.env.VGC_API_MAX_TOKENS || 6e6);
 
 function toolSchemas() {
   return TOOLS.filter(t => !HIDDEN.has(t.name)).map(t => {
@@ -77,8 +81,8 @@ export class ApiAgent {
   }
 
   async complete() {
-    const cap = Number(process.env.VGC_API_MAX_USD || 3);
-    if (this.usage.cost > cap) throw Object.assign(new Error(`spending cap of $${cap} reached for this match`), {fatal: true});
+    if (this.usage.cost > MAX_USD) throw Object.assign(new Error(`spending cap of $${MAX_USD} reached for this match`), {fatal: true});
+    if (!this.usage.cost && MAX_TOKENS > 0 && this.usage.input + this.usage.output > MAX_TOKENS) throw Object.assign(new Error(`token cap of ${MAX_TOKENS} reached for this match`), {fatal: true});
     let messages = this.compact();
     // Anthropic models (via OpenRouter) cache only what is marked: mark the
     // current observation so the calls inside one decision reuse it cheaply.
@@ -218,12 +222,12 @@ if (process.argv[1]?.endsWith('api-agent.mjs')) {
   const provider = opt('provider') || (process.env.OPENROUTER_API_KEY ? 'openrouter' : 'openai');
   const key = opt('key') || process.env[PROVIDERS[provider]?.env];
   const base = (process.env.VGC_ARENA_URL || 'http://127.0.0.1:3170').replace(/\/$/, '');
-  const call = async (name, a) => {
-    const res = await fetch(`${base}/api/tools/${name}`, {method: 'POST', headers: {'content-type': 'application/json', 'x-vgc-client': JSON.stringify({name: `api-agent-local/${provider}`, via: 'api-agent'})}, body: JSON.stringify(a)});
+  const call = async (name, a, opts) => {
+    const res = await fetch(`${base}/api/tools/${name}${opts?.noWait ? '?nowait=1' : ''}`, {method: 'POST', headers: {'content-type': 'application/json', 'x-vgc-client': JSON.stringify({name: `api-agent-local/${provider}`, via: 'api-agent'})}, body: JSON.stringify(a)});
     return (await res.json()).text;
   };
   const agent = new ApiAgent({provider, key, model: opt('model'), effort: opt('effort'), call, log: s => console.log(`[${new Date().toISOString().slice(11, 19)}] ${s}`)});
-  const join = {model: opt('model'), model_source: 'user', owner: opt('owner')};
+  const join = {model: opt('model'), model_source: 'user', owner: opt('owner'), key: opt('player-key') || process.env.VGC_PLAYER_KEY || undefined};
   if (opt('room')) join.room = opt('room');
   if (opt('bot')) join.vs_bot = opt('bot');
   agent.play(join).then(r => {

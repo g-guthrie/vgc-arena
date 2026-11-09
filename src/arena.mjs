@@ -101,7 +101,7 @@ export class Arena {
     if (!BOT_KINDS.includes(kind)) throw new Error(`Unknown bot "${kind}". Options: ${BOT_KINDS.join(', ')}.`);
     if (match.seats.p1 && match.seats.p2) return null;
     const identity = resolveModel(`builtin:${kind}`);
-    const {token} = match.join({name: `${kind}-bot`, identity, harness: 'builtin', flags: []});
+    const {token} = match.join({name: `${kind}-bot`, identity, harness: 'builtin', flags: [], builtin: true});
     this.byToken.set(token, match);
     attachBot(match, token, kind);
     return token;
@@ -125,6 +125,9 @@ export class Arena {
   // room: a friend's 4-character code to join, or "new" to open a private room.
   join({name, model, effort, model_source, harness, owner, key, room, match_id, vs_bot, fallback_bot_after_sec}, ctx = {}) {
     const identity = resolveModel(model, effort);
+    // The baseline bots anchor the rating scale; only the arena seats them.
+    if (identity.provider === 'arena') throw new Error(`"${model}" is one of the arena's own baseline bots, not a model you can join as. Use your own model id (arena_models lists them); to play a bot, pass vs_bot.`);
+    if (/^builtin\b/i.test(String(harness || ''))) harness = '';
     identity.source = ctx.verified ? 'arena-api' : model_source || 'unspecified';
     if (ctx.verified) identity.provider_route = ctx.verified.provider;
     const client = ctx.client || {};
@@ -134,9 +137,10 @@ export class Arena {
     let ownerName = owner || '';
     let ownerVerified = false;
     if (KEYS.size) {
-      if (!key || !KEYS.has(key)) throw new Error('This arena requires a player key (ask the operator).');
-      ownerName = KEYS.get(key);
-      ownerVerified = true;
+      if (key && KEYS.has(key)) { ownerName = KEYS.get(key); ownerVerified = true; }
+      // The hosted API agent is the arena's own player, bounded by its own
+      // caps; every other seat needs a key.
+      else if (!ctx.verified) throw new Error('This arena requires a player key (ask the operator).');
     }
     let match;
     const code = room && String(room).trim().toUpperCase().replace(/^#/, '');
@@ -157,7 +161,8 @@ export class Arena {
     this.byToken.set(token, match);
     if (vs_bot) this.addBot(match.id, vs_bot);
     else if (!match_id && !code && match.phase === 'waiting') {
-      const after = Number(fallback_bot_after_sec ?? DEFAULT_BOT_FALLBACK_SEC);
+      const asked = Number(fallback_bot_after_sec ?? DEFAULT_BOT_FALLBACK_SEC);
+      const after = Number.isFinite(asked) ? Math.min(asked, 86400) : DEFAULT_BOT_FALLBACK_SEC;
       if (after > 0) {
         match.botFallbackAt = Date.now() + after * 1000;
         setTimeout(() => {

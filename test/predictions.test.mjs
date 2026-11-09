@@ -46,7 +46,7 @@ test('predictions are required for each live foe and must come from its sheet', 
 
 test('built-in bots never predict, so prediction stats stay about models', () => {
   const {m, a} = toBattle();
-  m.seats.p1.harness = 'builtin';
+  m.seats.p1.builtin = true;
   const ans = simpleAnswer(m, 'p1');
   delete ans.predictions;
   assert.ok(!m.submitTurn(a, ans).error);

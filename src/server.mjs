@@ -20,6 +20,11 @@ import {replayHtml} from './artifacts.mjs';
 import {ApiAgent, PROVIDERS, checkKey} from './api-agent.mjs';
 
 const MAX_API_AGENTS = Number(process.env.VGC_MAX_API_AGENTS || 12);
+// No request the arena takes is large: tool arguments, or two team exports.
+const MAX_BODY_BYTES = Number(process.env.VGC_MAX_BODY_KB || 256) * 1024;
+// What a client may say about its own transport. "arena-api" (the hosted,
+// verified agent) is deliberately not on the list.
+const CLIENT_VIA = new Set(['mcp-stdio', 'cli', 'api-agent']);
 const apiAgents = new Set();
 let orModels = {at: 0, data: null};
 
@@ -29,13 +34,22 @@ async function startApiAgent(arena, b) {
   const provider = String(b.provider || '').toLowerCase();
   if (!PROVIDERS[provider]) throw Object.assign(new Error('provider must be "openai" or "openrouter"'), {status: 400});
   if (!b.key || !b.model) throw Object.assign(new Error('key and model are required'), {status: 400});
-  if (apiAgents.size >= MAX_API_AGENTS) throw Object.assign(new Error('The arena is running as many API players as it can right now. Try again shortly.'), {status: 429});
-  const chk = await checkKey(provider, b.key);
-  if (!chk.ok) throw Object.assign(new Error(chk.error), {status: 400});
+  const full = () => Object.assign(new Error('The arena is running as many API players as it can right now. Try again shortly.'), {status: 429});
+  if (apiAgents.size >= MAX_API_AGENTS) throw full();
+  // Hold a slot while the key is checked, so a burst cannot overshoot the cap.
+  const slot = {};
+  apiAgents.add(slot);
   let match = null;
-  const agent = new ApiAgent({
+  let agent;
+  try {
+    const chk = await checkKey(provider, b.key);
+    if (!chk.ok) throw Object.assign(new Error(chk.error), {status: 400});
+    agent = buildAgent();
+    apiAgents.add(agent);
+  } finally { apiAgents.delete(slot); }
+  function buildAgent() { return new ApiAgent({
     provider, key: b.key, model: b.model, effort: b.effort || null,
-    call: (name, args) => runTool(arena, name, args, {client: {name: `arena-api/${provider}`, via: 'arena-api'}, verified: {provider}}),
+    call: (name, args, opts) => runTool(arena, name, args, {client: {name: `arena-api/${provider}`, via: 'arena-api'}, verified: {provider}, noWait: !!opts?.noWait}),
     onUsage: (usage, served) => {
       try {
         match ||= arena.matchFor(agent.seat);
@@ -43,9 +57,8 @@ async function startApiAgent(arena, b) {
         seat.api = {provider, requested: b.model, served, calls: usage.calls, input: usage.input, output: usage.output, cost: usage.cost};
       } catch {}
     },
-  });
-  apiAgents.add(agent);
-  const join = {model: b.model, model_source: 'user', owner: b.owner || undefined};
+  }); }
+  const join = {model: b.model, model_source: 'user', owner: b.owner || undefined, key: b.player_key || undefined};
   const mode = b.mode || 'ladder';
   if (mode === 'new') join.room = 'new';
   else if (mode === 'room') join.room = b.room;
@@ -63,7 +76,7 @@ function clientFrom(req, mcpClient) {
   return {
     name: mcpClient?.name || fwd.name || '',
     version: mcpClient?.version || fwd.version || '',
-    via: fwd.via || (mcpClient ? 'mcp-http' : 'http'),
+    via: CLIENT_VIA.has(fwd.via) ? fwd.via : mcpClient ? 'mcp-http' : 'http',
     userAgent: String(req.headers['user-agent'] || '').slice(0, 200),
   };
 }
@@ -76,7 +89,7 @@ function archivedView(art) {
   }
   return {
     id: art.id, room: art.room || null, label: art.label, phase: 'finished', createdAt: art.createdAt, finishedAt: art.finishedAt, format: art.format, bestOf: art.bestOf,
-    score: art.score, winner: art.winner, endReason: art.endReason, archived: true,
+    score: art.score, winner: art.winner, endReason: art.endReason, awardedGames: (art.awardedGames || []).length, archived: true,
     players: ['p1', 'p2'].map(s => art.players[s] && {side: s, name: art.players[s].name, model: art.players[s].model, modelName: art.players[s].identity?.name,
       effort: art.players[s].identity?.effort || null, provider: art.players[s].identity?.provider, owner: art.players[s].owner, harness: art.players[s].harness, flags: art.players[s].flags, teamSubmitted: true}),
     sheets,
@@ -123,7 +136,10 @@ export function createServer({arena = new Arena()} = {}) {
 
   async function body(req) {
     const chunks = [];
-    for await (const c of req) chunks.push(c);
+    let size = 0;
+    // Past the limit the rest is read and dropped, so the refusal can still be sent.
+    for await (const c of req) { size += c.length; if (size <= MAX_BODY_BYTES) chunks.push(c); }
+    if (size > MAX_BODY_BYTES) throw Object.assign(new Error(`Request body too large (limit ${Math.round(MAX_BODY_BYTES / 1024)} KB).`), {status: 413});
     const raw = Buffer.concat(chunks).toString('utf8');
     if (!raw) return {};
     try { return JSON.parse(raw); } catch { throw Object.assign(new Error('Body must be JSON'), {status: 400}); }
@@ -174,7 +190,7 @@ export function createServer({arena = new Arena()} = {}) {
         if (a === 'info') return send(res, 200, {harness: HARNESS_VERSION, format: FORMAT_ID, showdownCommit: SHOWDOWN_COMMIT, tools: TOOLS.map(t => t.name), models: listModels()});
         if (a === 'tools' && b && req.method === 'POST') {
           const args = await body(req);
-          return send(res, 200, {text: await runTool(arena, b, args, {client: clientFrom(req)})});
+          return send(res, 200, {text: await runTool(arena, b, args, {client: clientFrom(req), noWait: q.nowait === '1'})});
         }
         if (a === 'stats') {
           const opts = {by: q.by || 'pilot', group: q.group || 'model', includeUnlisted: q.unlisted === '1'};
