@@ -50,6 +50,7 @@ function strictSchema(schema) {
 
 const SYSTEM = `You are playing in VGC Arena through function calls. Each user message is the arena's current view of your match and ends with the question to answer.
 Research with the dex functions if you want, then answer with the one answer function offered. Its schema lists exactly the legal answers.
+You have ${MAX_CALLS} function calls per question, research included. On the last one only the answer function is offered.
 
 ${GAME_BRIEFING}`;
 
@@ -94,7 +95,9 @@ export class ApiAgent {
       }
     }
     const answer = this.strict ? {...this.answerTool, function: {...this.answerTool.function, strict: true, parameters: strictSchema(this.answerTool.function.parameters)}} : this.answerTool;
-    const body = {model: this.model, messages, tools: [...this.tools, answer], tool_choice: 'required', parallel_tool_calls: false};
+    // The last call of a decision offers only the answer: a player that spent
+    // its budget on research still gets to answer, and can still answer wrongly.
+    const body = {model: this.model, messages, tools: this.lastCall ? [answer] : [...this.tools, answer], tool_choice: 'required', parallel_tool_calls: false};
     if (this.provider === 'openai') {
       body.max_completion_tokens = this.maxTokens;
       if (this.effort) body.reasoning_effort = this.effort;
@@ -160,6 +163,7 @@ export class ApiAgent {
     this.messages.push({role: 'user', content: stateText});
     let reminded = false;
     for (let i = 0; i < MAX_CALLS; i++) {
+      this.lastCall = i === MAX_CALLS - 1;
       const msg = await this.complete();
       const calls = msg.tool_calls || [];
       if (!calls.length) {

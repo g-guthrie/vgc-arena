@@ -194,7 +194,9 @@ export function boardText(draft, {lockProblems} = {}) {
   draft.slots.forEach((s, i) => {
     if (!s) { L.push(`  ${i + 1} ·  (empty)`); return; }
     const miss = slotMissing(s);
-    const spTxt = Object.keys(s.sp).length ? STATS.filter(k => s.sp[k]).map(k => `${s.sp[k]} ${STAT_LABEL[k]}`).join(' / ') : '—';
+    const spent = STATS.reduce((a, k) => a + (s.sp[k] || 0), 0);
+    const spList = STATS.filter(k => s.sp[k]).map(k => `${s.sp[k]} ${STAT_LABEL[k]}`).join(' / ');
+    const spTxt = s.spSet ? `${spList || 'none'}${spent < SP_MAX_TOTAL ? ` (${SP_MAX_TOTAL - spent} of ${SP_MAX_TOTAL} unspent)` : ''}` : '—';
     L.push(`  ${i + 1} ${miss.length ? '…' : '✓'} ${s.species} @ ${s.item || '—'} · ${s.ability || '—'} · ${s.nature || '—'} · SP ${spTxt} · ${s.moves.join(', ') || 'no moves'}`);
     // Final stats only mean something once the nature and stat points are chosen.
     if (s.spSet && s.nature) { const st = computeStats(toSet(s)); L.push(`      stats ${STATS.map(k => `${STAT_LABEL[k]} ${st[k]}`).join(' ')}`); }

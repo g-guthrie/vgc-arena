@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {dex, ROOT_DIR} from './showdown.mjs';
-import {legalOptions, actionMenu, optionFor} from './observation.mjs';
+import {legalOptions, actionMenu, optionFor, predictionEnum} from './observation.mjs';
 
 export const BOT_KINDS = ['random', 'greedy'];
 const TEAM_FILES = ['sample-sun.txt', 'sample-room.txt'];
@@ -107,6 +107,14 @@ export function attachBot(match, token, kind) {
           match.submitPreview(token, {bring: shuffle(team).slice(0, 4), game_plan: `${kind} bot`});
         } else if (match.phase === 'battle') {
           const payload = decideTurn(match.currentGame, side, kind);
+          // A bot driving a model's seat (demo data) owes predictions like any
+          // player: it guesses at random from each foe's sheet.
+          if (!match.seats[side].builtin) {
+            payload.predictions = Object.fromEntries(match.currentObs(side).menu.predict.map(f => {
+              const opts = predictionEnum(match.sheetFor(side === 'p1' ? 'p2' : 'p1', f.species));
+              return [f.foe, {action: opts[Math.floor(Math.random() * opts.length)], confidence: 0.4}];
+            }));
+          }
           const res = match.submitTurn(token, payload);
           if (res.error) {
             // Never stall a match: fall back to the first option per slot.
