@@ -87,7 +87,7 @@ export function question(draft) {
     schema: {type: 'object', properties: {team_plan: {type: 'string'}}, required: ['team_plan'], additionalProperties: false}};
 }
 
-export function questionText(q, think = () => '') {
+export function questionText(q) {
   const L = [`QUESTION ${q.n} of ${q.of} · ${q.title}`, q.prompt];
   if (q.step === 'species') L.push(`Options: ${q.optionsNote} (search_pokemon to browse).`);
   if (q.step === 'set') {
@@ -104,7 +104,6 @@ export function questionText(q, think = () => '') {
     set: `{${(q.fields || []).map(k => part[k]).join(', ')}}`,
     lock: '{"team_plan": "…"}',
   }[q.step];
-  L.push(think(q.step));
   L.push(`Answer with draft_answer ${example} plus your seat. To change an earlier answer: draft_revise({slot}) reopens that set, draft_revise({slot, species}) swaps the Pokémon.`);
   return L.join('\n');
 }

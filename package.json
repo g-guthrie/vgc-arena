@@ -10,6 +10,8 @@
   },
   "scripts": {
     "setup": "bash scripts/setup-showdown.sh",
+    "postinstall": "node scripts/postinstall.mjs",
+    "connect": "node scripts/connect.mjs",
     "start": "node src/server.mjs",
     "mcp": "node src/mcp-stdio.mjs",
     "test": "node --test test/*.test.mjs",

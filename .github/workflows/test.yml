@@ -13,13 +13,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
       - name: Cache the pinned simulator
         uses: actions/cache@v4
         with:
           path: vendor/pokemon-showdown
           key: showdown-${{ hashFiles('scripts/setup-showdown.sh') }}
-      - run: npm run setup
+      - run: npm ci   # postinstall builds the simulator unless the cache restored it
       - run: npm test
       - run: npm run e2e
       - name: MCP bridge end to end (starts the arena itself)

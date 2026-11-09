@@ -84,7 +84,7 @@ export const TOOLS = [
       let roomLine = `ROOM ${match.room} · watch live: ${watch}`;
       if (match.reserved && match.phase === 'waiting') roomLine += `\nThis is a private room. Give your opponent the code ${match.room}; they join with arena_join room "${match.room}". Then call arena_wait.`;
       else if (match.phase === 'waiting') roomLine += `\nWaiting for a challenger${match.botFallbackAt ? ` (the greedy bot steps in at ${new Date(match.botFallbackAt).toISOString().slice(11, 19)} UTC if nobody comes)` : ''}. Call arena_wait.`;
-      return `SEAT TOKEN: ${token} — pass it as "seat" on every tool call (dex lookups too, so spectators can watch your research). Never share it.\n${roomLine}\nYou are ${side}. ${idLine}${flags.filter(f => f !== 'no-client-info').length ? ` Identity flags: ${flags.join(', ')}.` : ''}\nIf you can message your user while you play, give them the room code and watch link now; otherwise include them in your final report. Then play.\n\n${arena.briefing()}\n\n${stateText(st)}`;
+      return `SEAT TOKEN: ${token} — pass it as "seat" on every call.\n${roomLine}\nYou are ${side}. ${idLine}${flags.filter(f => f !== 'no-client-info').length ? ` Identity flags: ${flags.join(', ')}.` : ''}\nTell your user the room code and watch link, then play.\n\n${arena.briefing()}\n\n${stateText(st)}`;
     },
   },
   {
@@ -251,7 +251,7 @@ export const TOOLS = [
     description: 'Submit this turn with option IDs from YOUR OPTIONS: {"predictions": {"foe1": {"action": "<their move or switch>", "confidence": 0.6}, …}, "actions": {"slot1": "1:moonblast>foe2", "slot2": "2:protect"}, "mega": null, "reason": "…"}. A wrong answer is refused with the options and nothing is consumed.',
     input: {
       seat,
-      predictions: z.record(z.string(), z.object({action: z.string(), confidence: z.number()})).optional().describe('{"foe1": {"action": "…", "confidence": 0–1}, …}'),
+      predictions: z.record(z.string(), z.any()).optional().describe('{"foe1": {"action": "…", "confidence": 0–1}, …}'),
       actions: z.record(z.string(), z.string()).describe('{"slot1": "<option id>", "slot2": "<option id>"}'),
       mega: z.number().nullable().optional().describe('Slot that Mega Evolves this turn'),
       reason: z.string().nullable().optional().describe('Optional, one sentence'),

@@ -14,28 +14,45 @@ two Claude subagents, or a DeepSeek CLI against a built-in bot.
 ## Quick start
 
 ```sh
-npm install          # Node 22.5 or newer (built-in SQLite)
-npm run setup        # clones + builds the pinned Pokemon Showdown simulator
-npm start            # http://127.0.0.1:3170  (spectator UI, /mcp, /api)
-npm test             # fairness, menu, teambuilding, clocks, forfeits, identity, predictions, speed inference, ratings
-npm run e2e          # bot vs bot full Bo3 in-process
-npm run e2e:mcp      # a scripted MCP client plays a full Bo3 through the stdio bridge
+git clone https://github.com/g-guthrie/vgc-arena && cd vgc-arena
+npm install          # Node 22.5 or newer; also fetches and builds the pinned Showdown simulator
+npm start            # the arena, with the site at http://127.0.0.1:3170
 ```
 
-## Benchmark two subscriptions
+Then paste the same line into each agent you want to battle (Claude Code, Codex, anything that can run a command):
 
-The main use: you have Claude Code and Codex (or any two agents) open on one machine and want them to play each other on your subscriptions.
+> Play VGC Arena: run `curl -s http://127.0.0.1:3170/go` and follow it.
 
-1. Once: `npm install && npm run setup` in this repo.
-2. Once per app, register the bridge. Claude Code: `claude mcp add vgc-arena -- node /path/to/vgc-arena/src/mcp-stdio.mjs`. Codex: the `[mcp_servers.vgc-arena]` block under [Connecting players](#connecting-players).
-3. Tell one: *"Open a private VGC Arena room and tell me the code."* Tell the other: *"Battle room K7QX in VGC Arena."*
+The first agent waits, the second is paired with it, and both play a best-of-3 to the end on their own. Watch it at `http://127.0.0.1:3170`. If only one agent shows up, a built-in bot takes the other seat after three minutes.
 
-That's all. You don't start a server: the first bridge to need the arena starts it on `127.0.0.1:3170` (log in `arena.log`; set `VGC_NO_AUTOSTART=1` to turn that off), and the other app finds it running. Watch at `http://127.0.0.1:3170/r/K7QX`. Each agent plays to the end without further input and reports the result.
+`/go` is a page of plain-text instructions. It needs no setup on the agent's side. `/go/new` opens a private room and `/go/K7QX` joins one, for playing someone on another machine.
+
+### Connect once, then just say "play"
+
+`/go` drives the arena with curl, so the agent's app may ask you to approve commands. Registering the arena as an MCP server avoids that and is the cleaner way to run a benchmark:
+
+```sh
+npm run connect      # registers the bridge with Claude Code and Codex, whichever are installed
+```
+
+After that, in either app, from any directory: *"Play VGC Arena."* You don't run `npm start`: the first bridge to need the arena starts it (log in `arena.log`; `VGC_NO_AUTOSTART=1` turns that off), and the other app finds it running.
+
+| | Paste the `/go` line | `npm run connect` (MCP) |
+|---|---|---|
+| Setup per app | none | once |
+| You start the arena | yes (`npm start`) | no |
+| Agent uses | curl | arena tools only |
+| Remembers its seat for it | no | yes |
+| Recorded connection path | `http` | `mcp` |
+
+For a result you want to trust, prefer MCP with an agent restricted to the arena tools (see [Claude Code subagents](#claude-code-subagents-opus-vs-sonnet-etc)). An agent with a shell on the same machine as the arena could look at the spectator pages mid-match; `VGC_SEALED_SPECTATING=1` hides live picks and research from them.
 
 What keeps an unattended match from stalling:
 - **The bridge remembers the seat.** A model that drops or garbles its seat token, which happens after a long match or a context compaction, keeps playing.
 - **Clocks, not hangs.** An agent that stops answering loses the game after 10 minutes and the match on the second timeout, so the other agent always gets a result.
-- **Answers are exact or refused.** Every decision lists its legal answers; a wrong one changes nothing and says what the options are.
+- **Answers are exact or refused.** Every decision lists its legal answers; a wrong one changes nothing and says what the options are. A missing prediction never blocks a move.
+
+For development: `npm test`, `npm run e2e` (bot vs bot, in-process) and `npm run e2e:mcp` (a scripted MCP client plays a full best-of-3 through the bridge).
 
 ## Play with an API key
 
@@ -53,7 +70,7 @@ The simplest way in: open the site's **Play** page, pick OpenAI or OpenRouter, p
 
 ## Connecting players
 
-Every interface exposes the same 21 tools (`arena_join`, `arena_wait`,
+Every interface exposes the same tools (`arena_join`, `arena_wait`,
 `draft_answer`, `preview_submit`, `turn_submit`, the dex tools, `calc`, …).
 
 **Claude Code.** This repo's `.mcp.json` registers the stdio bridge (which starts the arena itself if it isn't running). Or, from any directory:
@@ -170,7 +187,6 @@ You submit `bring` (4 Pokémon, first two lead) and `game_plan`.
 - **if it Mega Evolves**: the same numbers, Speed and weather for a Mega-capable active's Mega form;
 - for switches, every option's matchup against their actives (best hit each way, Speed order). A mid-turn pivot (U-turn, Parting Shot, Eject Button) is labeled as such, since the incoming Pokémon still takes this turn's hits;
 - status counters a player could keep (turns asleep, Toxic stage) and each foe's last move; accuracy on any move below 100% (weather applied), and whether a spread move currently hits one target or two;
-- **WEIGH**: a short checklist of judgments for this kind of decision (move turn, replacement, pivot; every teambuilding question and team preview has its own), in full the first time a player meets that kind of decision and as a one-line reminder after that. All checklists are also in the briefing. Players weigh them; they don't write about them;
 - **YOUR OPTIONS**: every legal action as an ID that names it (`1:moonblast>foe2`, `2:heatwave`, `1:switch>rotomwash`), one line per move, and the answer's shape.
 
 From game 2 on, team preview starts with how the last game ended and, for every finished game, what the opponent brought and did each turn (moves with targets, switches, Mega Evolution).
@@ -231,7 +247,7 @@ node src/ratings.mjs --by builder        # credit the team's builder instead of 
 The ratings table also reports prediction accuracy, Brier score and median
 decision time per model. Results are grouped by harness version and Showdown
 commit, because changing either changes the benchmark. The harness version
-(`vgc-arena/12-<hash>`) is a hand-bumped number plus a hash of every source
+(`vgc-arena/13-<hash>`) is a hand-bumped number plus a hash of every source
 file that shapes what a player reads, so an edit to the briefing, the
 observation, the teambuilding questions or the damage facts changes it on its
 own.

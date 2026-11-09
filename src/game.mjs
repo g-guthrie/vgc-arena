@@ -172,7 +172,12 @@ export function describeLines(lines, viewer) {
     case '-activate': out.push(`  ${who(p[1])}: ${(p[2] || '').replace(/^(move|ability|item): /, '')}${p[3] && !p[3].startsWith('[') ? ` ${p[3]}` : ''}`); break;
     case '-start': out.push(`  ${who(p[1])}: ${(p[2] || '').replace(/^(move|ability|item): /, '')} started${p[3] && !p[3].startsWith('[') ? ` (${p[3]})` : ''}`); break;
     case '-end': out.push(`  ${who(p[1])}: ${(p[2] || '').replace(/^(move|ability|item): /, '')} ended`); break;
-    case '-singleturn': case '-singlemove': out.push(`  ${who(p[1])}: ${(p[2] || '').replace('move: ', '')}`); break;
+    case '-singleturn': case '-singlemove': {
+      const what = (p[2] || '').replace('move: ', '');
+      // The line above already says it when this is just the move that was used.
+      if (!String(out.at(-1) || '').endsWith(`used ${what}`)) out.push(`  ${who(p[1])}: ${what}`);
+      break;
+    }
     case '-transform': out.push(`  ${who(p[1])} transformed into ${who(p[2])}`); break;
     case '-formechange': out.push(`  ${who(p[1])} changed form to ${p[2]}`); break;
     case '-hitcount': out.push(`  hit ${p[2]} times`); break;

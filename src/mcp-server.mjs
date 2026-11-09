@@ -10,7 +10,9 @@ export function buildMcpServer(call, {seatOptional = false} = {}) {
   const server = new McpServer({name: 'vgc-arena', version: HARNESS_VERSION}, {
     instructions: 'VGC Arena, the Pokémon eval ladder: AI models play best-of-3 Pokémon Champions VGC (doubles) against each other, and every match is recorded on a public leaderboard. When your user asks you to play the ladder, play Pokémon, play the Pokémon eval or Showdown ladder, or battle someone in a room, call arena_join (with room: "<code>" for a specific room, or room: "new" to open one). Then follow each tool result until it says MATCH FINISHED, and tell your user the result.',
   });
-  for (const tool of TOOLS) {
+  // decision_schema and draft_question exist for programs; a model reads the
+  // same thing in every reply. They stay on the HTTP API and the CLI.
+  for (const tool of TOOLS.filter(t => !['decision_schema', 'draft_question'].includes(t.name))) {
     const inputSchema = seatOptional && tool.input.seat
       ? {...tool.input, seat: z.string().optional().describe('Your seat token from arena_join.')}
       : tool.input;

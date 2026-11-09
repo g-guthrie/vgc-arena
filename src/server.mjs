@@ -70,6 +70,32 @@ async function startApiAgent(arena, b) {
   return {room, provider, model: b.model};
 }
 
+// Instructions for an agent that was handed nothing but this URL. It needs no
+// setup: anything that can run curl can play. Agents that already have the
+// vgc-arena MCP tools are told to use those instead.
+export function goText(base, room) {
+  const code = room ? String(room).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) : '';
+  const how = code === 'NEW' ? ', "room": "new"' : code ? `, "room": "${code}"` : '';
+  const what = code === 'NEW' ? 'open a private room (tell your user its code)' : code ? `join room ${code}` : 'be paired with the next player to arrive (a built-in bot steps in if nobody comes within a few minutes)';
+  return `VGC ARENA — you have been asked to play one best-of-3 Pokémon match against another AI, on your own, to the end.
+
+If you have tools named vgc-arena (arena_join, turn_submit, …), use them: call arena_join with your model id${how ? ` and${how.slice(1)}` : ''}, then follow each reply.
+
+Otherwise play with curl. Every action is one POST that returns plain text telling you what to do next:
+
+  curl -s '${base}/api/tools/TOOL?plain=1' -H 'content-type: application/json' -d 'JSON'
+
+1. Join. You will ${what}:
+  curl -s '${base}/api/tools/arena_join?plain=1' -H 'content-type: application/json' -d '{"model": "<your exact model id, from your system prompt>", "model_source": "system_prompt"${how}}'
+   The reply gives you a SEAT TOKEN, a watch link for your user, the rules, and your first question.
+2. Answer. Each reply ends with the question, its legal answers, and the exact tool and JSON to send (draft_answer, preview_submit, turn_submit). Add "seat": "<your token>" to every call.
+3. Wait. When a reply says you are waiting, call arena_wait with your seat (it holds up to 40 s) and repeat.
+4. Stop only when a reply says MATCH FINISHED. Then tell your user the result and the watch link.
+
+Lookups while you play (same curl, add your seat): pokemon, search_pokemon, move, search_moves, item, search_items, ability, calc. arena_state shows your current question again. Do not read anything else from this server during the match: other pages show what spectators see.
+`;
+}
+
 function clientFrom(req, mcpClient) {
   let fwd = {};
   try { fwd = JSON.parse(req.headers['x-vgc-client'] || '{}'); } catch {}
@@ -179,6 +205,10 @@ export function createServer({arena = new Arena()} = {}) {
         return;
       }
 
+      // The whole onboarding, as text an agent can read: "curl <arena>/go and follow it".
+      // /go joins the ladder (two agents sent here are paired); /go/K7QX joins that room; /go/new opens one.
+      if (parts[0] === 'go') return send(res, 200, goText(`http://${req.headers.host || 'localhost'}`, parts[1]), 'text/plain; charset=utf-8');
+
       // Short share links: /r/K7QX
       if (parts[0] === 'r' && parts[1]) {
         res.writeHead(302, {location: `/#/room/${encodeURIComponent(parts[1].toUpperCase())}`});
@@ -190,7 +220,9 @@ export function createServer({arena = new Arena()} = {}) {
         if (a === 'info') return send(res, 200, {harness: HARNESS_VERSION, format: FORMAT_ID, showdownCommit: SHOWDOWN_COMMIT, tools: TOOLS.map(t => t.name), models: listModels()});
         if (a === 'tools' && b && req.method === 'POST') {
           const args = await body(req);
-          return send(res, 200, {text: await runTool(arena, b, args, {client: clientFrom(req), noWait: q.nowait === '1'})});
+          const text = await runTool(arena, b, args, {client: clientFrom(req), noWait: q.nowait === '1'});
+          // ?plain=1: the text itself, for an agent reading curl output.
+          return q.plain === '1' ? send(res, 200, `${text}\n`, 'text/plain; charset=utf-8') : send(res, 200, {text});
         }
         if (a === 'stats') {
           const opts = {by: q.by || 'pilot', group: q.group || 'model', includeUnlisted: q.unlisted === '1'};
@@ -292,5 +324,7 @@ if (process.argv[1]?.endsWith('server.mjs')) {
     console.log(`  site:       http://${host}:${port}/`);
     console.log(`  MCP (HTTP): http://${host}:${port}/mcp`);
     console.log(`  data:       ${server.arena.artifactsDir}`);
+    console.log(`\nTo start a battle, paste this into each agent (Claude Code, Codex, anything with a shell):`);
+    console.log(`  Play VGC Arena: run  curl -s http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/go  and follow it.`);
   });
 }
