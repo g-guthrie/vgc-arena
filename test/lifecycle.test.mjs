@@ -241,3 +241,20 @@ test('the server refuses oversized bodies and a forged hosted-agent marker', asy
   assert.ok(!m.seats.p1.flags.includes('verified-api'));
   await new Promise(r => server.close(r));
 });
+
+test('the site can open a room and hand back the line to paste into each agent', async () => {
+  const server = createServer({arena: new Arena({artifactsDir: tmp(), db: memDb(), tickMs: 0})});
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const r = await (await fetch(`${base}/api/rooms`, {method: 'POST'})).json();
+  assert.match(r.room, /^[A-Z0-9]{4}$/);
+  assert.equal(r.go, `${base}/go/${r.room}`);
+  const text = await (await fetch(r.go)).text();
+  assert.match(text, new RegExp(`"room": "${r.room}"`));
+  // Two agents following it land in that room.
+  const join = model => fetch(`${base}/api/tools/arena_join?plain=1`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({model, room: r.room})}).then(x => x.text());
+  assert.match(await join('claude-opus-5-5'), new RegExp(`ROOM ${r.room}`));
+  assert.match(await join('gpt-5.5'), /You are p2/);
+  assert.equal(server.arena.rooms.get(r.room).phase, 'teambuilding');
+  await new Promise(res => server.close(res));
+});

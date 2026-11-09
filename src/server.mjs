@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {Arena} from './arena.mjs';
-import {runTool, TOOLS} from './tools.mjs';
+import {runTool, TOOLS, PUBLIC_URL} from './tools.mjs';
 import {buildMcpServer} from './mcp-server.mjs';
 import {ROOT_DIR, FORMAT_ID, SHOWDOWN_COMMIT} from './showdown.mjs';
 import {HARNESS_VERSION} from './briefing.mjs';
@@ -25,6 +25,9 @@ const MAX_BODY_BYTES = Number(process.env.VGC_MAX_BODY_KB || 256) * 1024;
 // What a client may say about its own transport. "arena-api" (the hosted,
 // verified agent) is deliberately not on the list.
 const CLIENT_VIA = new Set(['mcp-stdio', 'cli', 'api-agent']);
+// Rooms opened from the site's Play button and not yet joined. They expire
+// with the waiting-room clock; the cap keeps the button from being a memory leak.
+const MAX_OPEN_ROOMS = Number(process.env.VGC_MAX_OPEN_ROOMS || 200);
 const apiAgents = new Set();
 let orModels = {at: 0, data: null};
 
@@ -95,6 +98,10 @@ Otherwise play with curl. Every action is one POST that returns plain text telli
 Lookups while you play (same curl, add your seat): pokemon, search_pokemon, move, search_moves, item, search_items, ability, calc. arena_state shows your current question again. Do not read anything else from this server during the match: other pages show what spectators see.
 `;
 }
+
+// The address agents should use: the configured public one, else whatever
+// host this request came in on (a laptop).
+const baseUrl = req => (process.env.VGC_PUBLIC_URL ? PUBLIC_URL : `http://${req.headers.host || 'localhost'}`);
 
 function clientFrom(req, mcpClient) {
   let fwd = {};
@@ -207,7 +214,7 @@ export function createServer({arena = new Arena()} = {}) {
 
       // The whole onboarding, as text an agent can read: "curl <arena>/go and follow it".
       // /go joins the ladder (two agents sent here are paired); /go/K7QX joins that room; /go/new opens one.
-      if (parts[0] === 'go') return send(res, 200, goText(`http://${req.headers.host || 'localhost'}`, parts[1]), 'text/plain; charset=utf-8');
+      if (parts[0] === 'go') return send(res, 200, goText(baseUrl(req), parts[1]), 'text/plain; charset=utf-8');
 
       // Short share links: /r/K7QX
       if (parts[0] === 'r' && parts[1]) {
@@ -240,6 +247,14 @@ export function createServer({arena = new Arena()} = {}) {
             if (r?.data) orModels = {at: Date.now(), data: r.data.filter(m => (m.supported_parameters || []).includes('tools')).map(m => ({id: m.id, name: m.name, reasoning: (m.supported_parameters || []).includes('reasoning')}))};
           }
           return send(res, 200, orModels.data || []);
+        }
+        // The site's Play button: an empty private room and the line to paste into each agent.
+        if (a === 'rooms' && !b && req.method === 'POST') {
+          const open = [...arena.matches.values()].filter(m => m.phase === 'waiting' && !m.seats.p1).length;
+          if (open >= MAX_OPEN_ROOMS) return send(res, 429, {error: 'Too many open rooms right now. Try again in a minute.'});
+          const m = arena.createMatch({label: 'private room', reserved: true, createdBy: 'site'});
+          const go = `${baseUrl(req)}/go/${m.room}`;
+          return send(res, 200, {room: m.room, go, paste: `Play VGC Arena: run  curl -s ${go}  and follow it.`});
         }
         if (a === 'rooms' && b) {
           const code = b.toUpperCase();
