@@ -52,7 +52,8 @@ select { font: inherit; background: var(--surface-1); color: var(--text-primary)
 table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--text-muted); font-weight: 500; font-size: 12px; white-space: nowrap; }
-td.num, th.num { text-align: right; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+td:has(> .dot), td:has(> a > .dot) { white-space: nowrap; }
 .table-wrap { overflow-x: auto; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: baseline; }
 .bar { height: 8px; border-radius: 0 4px 4px 0; background: var(--accent); min-width: 2px; }
@@ -149,6 +150,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .controls > button.on, #livebtn.on { background: var(--good); color: #fff; border-color: var(--good); }
 #livebtn { font-weight: 700; font-size: 11px; letter-spacing: 0.06em; }
 .controls .sep { flex: 1; }
+.controls .seg, .pscontrols .seg { flex: none; }
+@media (max-width: 480px) {
+  .pscontrols { gap: 4px !important; }
+  .pscontrols > button { min-width: 30px !important; padding: 5px 6px !important; }
+  .pscontrols .seg button { padding: 5px 6px; font-size: 13px; }
+  .tiles { grid-template-columns: 1fr 1fr; }
+  .tiles > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
 .reasoning { margin: 14px 0; }
 .rtitle { font-weight: 650; margin: 0 0 8px; }
 .rcol { background: var(--surface-1); border: 1px solid var(--line); border-top: 3px solid var(--pc, var(--line)); border-radius: 12px; padding: 12px 14px; font-size: 13px; }
@@ -209,7 +218,7 @@ body.wide main { max-width: 1440px; }
 .bside b { border-bottom: 3px solid var(--pc); padding-bottom: 2px; }
 .bscore { font: 800 34px system-ui; font-variant-numeric: tabular-nums; letter-spacing: -.02em; } .bscore span { color: var(--text-muted); margin: 0 8px; }
 .pips { display: inline-flex; gap: 5px; } .pip { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--pc); transition: background .4s; } .pip.on { background: var(--pc); }
-.rm-rail { display: flex; align-items: center; gap: 0; overflow-x: auto; padding: 6px 2px 12px; scrollbar-width: none; }
+.rm-rail { position: relative; display: flex; align-items: center; gap: 0; overflow-x: auto; padding: 6px 2px 12px; scrollbar-width: none; }
 .rm-rail .st { display: flex; flex-direction: column; align-items: center; gap: 3px; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 12px; cursor: pointer; padding: 2px 6px; min-width: 70px; position: relative; }
 .rm-rail .st[disabled] { opacity: .45; cursor: default; }
 .rm-rail .st i { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); background: var(--surface-1); transition: all .3s; }
@@ -344,3 +353,10 @@ body.wide main { max-width: 1440px; }
 .slotmeta { font-size: 10.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .dots { display: flex; gap: 3px; justify-content: center; margin-top: 3px; } .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--line); transition: background .3s; } .dots i.on { background: var(--t1); }
 .draft .mc .badge2 { background: var(--good); }
+
+button.btn { border: 0; cursor: pointer; font: inherit; font-weight: 600; }
+.startcard { margin-top: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-1); display: grid; gap: 8px; justify-items: start; max-width: 620px; }
+.sc-room { font-size: 18px; } .sc-room b { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.14em; }
+.sc-line { display: flex; gap: 8px; align-items: stretch; width: 100%; }
+.sc-line code { flex: 1; min-width: 0; padding: 9px 10px; font-size: 13px; white-space: normal; overflow-wrap: anywhere; user-select: all; }
+.sc-line button { border: 1px solid var(--line); background: var(--surface-1); color: var(--text-primary); border-radius: 8px; padding: 0 12px; font: inherit; cursor: pointer; }

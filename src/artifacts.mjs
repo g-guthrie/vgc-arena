@@ -52,6 +52,7 @@ export function transcript(art) {
       out += '\n';
     }
   }
+  for (const g of art.awardedGames || []) out += `## Game ${g.n} — awarded to ${name(g.winner)} (not played: ${g.forfeit} forfeited the match)\n\n`;
   return out;
 }
 
@@ -79,7 +80,7 @@ export function writeArtifacts(match, dir) {
   const row = {
     id: art.id, label: art.label, finishedAt: art.finishedAt, harnessVersion: art.harnessVersion, showdownCommit: art.showdownCommit, format: art.format,
     winner: art.winner, endReason: art.endReason, score: art.score,
-    games: art.games.map(g => ({n: g.n, winner: g.winner, turns: g.turns})),
+    games: [...art.games.map(g => ({n: g.n, winner: g.winner, turns: g.turns})), ...(art.awardedGames || []).map(g => ({n: g.n, winner: g.winner, turns: 0, awarded: true}))],
     p1: {name: art.players.p1?.name, model: art.players.p1?.model, builder: match.fixedTeams?.builders?.p1 || art.players.p1?.model, teamHash: art.players.p1?.teamHash, ...perSide('p1')},
     p2: {name: art.players.p2?.name, model: art.players.p2?.model, builder: match.fixedTeams?.builders?.p2 || art.players.p2?.model, teamHash: art.players.p2?.teamHash, ...perSide('p2')},
     fixedTeams: !!match.fixedTeams,

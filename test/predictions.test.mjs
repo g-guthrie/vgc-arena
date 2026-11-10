@@ -32,21 +32,23 @@ test('a correct read scores 1 and a low-confidence miss scores its Brier penalty
   }
 });
 
-test('predictions are required for each live foe and must come from its sheet', () => {
+test('a missing or malformed prediction never blocks the move; it is just not recorded', () => {
   const {m, a} = toBattle();
   const ans = simpleAnswer(m, 'p1');
-  const r1 = m.submitTurn(a, {...ans, predictions: {foe1: ans.predictions.foe1}});
-  assert.match(r1.error, /predictions\.foe2 \(Indeedee-F\) is required/);
-  const r2 = m.submitTurn(a, {...ans, predictions: {...ans.predictions, foe1: {action: 'Flamethrower', confidence: 0.5}}});
-  assert.match(r2.error, /predictions\.foe1\.action must be one of/);
-  const r3 = m.submitTurn(a, {...ans, predictions: {...ans.predictions, foe1: {action: 'Trick Room', confidence: 2}}});
-  assert.match(r3.error, /confidence must be a number from 0 to 1/);
-  assert.equal(m.decisions.filter(d => d.kind === 'move').length, 0, 'a rejection consumes nothing');
+  const r = m.submitTurn(a, {...ans, predictions: {foe1: {action: 'Flamethrower', confidence: 0.5}}});
+  assert.ok(r.ok, r.error);
+  const d = m.decisions.find(x => x.kind === 'move');
+  assert.deepEqual(d.payload.predictions, []);
+  assert.deepEqual(d.payload.predictionsMissed, ['foe1', 'foe2']);
+  const {m: m2, a: a2} = toBattle();
+  const ans2 = simpleAnswer(m2, 'p1');
+  assert.ok(m2.submitTurn(a2, {...ans2, predictions: {...ans2.predictions, foe1: {action: 'Trick Room', confidence: 2}}}).ok);
+  assert.deepEqual(m2.decisions.find(x => x.kind === 'move').payload.predictions.map(p => p.foe), ['foe2']);
 });
 
 test('built-in bots never predict, so prediction stats stay about models', () => {
   const {m, a} = toBattle();
-  m.seats.p1.harness = 'builtin';
+  m.seats.p1.builtin = true;
   const ans = simpleAnswer(m, 'p1');
   delete ans.predictions;
   assert.ok(!m.submitTurn(a, ans).error);

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {Arena} from './arena.mjs';
-import {runTool, TOOLS} from './tools.mjs';
+import {runTool, TOOLS, PUBLIC_URL} from './tools.mjs';
 import {buildMcpServer} from './mcp-server.mjs';
 import {ROOT_DIR, FORMAT_ID, SHOWDOWN_COMMIT} from './showdown.mjs';
 import {HARNESS_VERSION} from './briefing.mjs';
@@ -20,6 +20,14 @@ import {replayHtml} from './artifacts.mjs';
 import {ApiAgent, PROVIDERS, checkKey} from './api-agent.mjs';
 
 const MAX_API_AGENTS = Number(process.env.VGC_MAX_API_AGENTS || 12);
+// No request the arena takes is large: tool arguments, or two team exports.
+const MAX_BODY_BYTES = Number(process.env.VGC_MAX_BODY_KB || 256) * 1024;
+// What a client may say about its own transport. "arena-api" (the hosted,
+// verified agent) is deliberately not on the list.
+const CLIENT_VIA = new Set(['mcp-stdio', 'cli', 'api-agent']);
+// Rooms opened from the site's Play button and not yet joined. They expire
+// with the waiting-room clock; the cap keeps the button from being a memory leak.
+const MAX_OPEN_ROOMS = Number(process.env.VGC_MAX_OPEN_ROOMS || 200);
 const apiAgents = new Set();
 let orModels = {at: 0, data: null};
 
@@ -29,13 +37,22 @@ async function startApiAgent(arena, b) {
   const provider = String(b.provider || '').toLowerCase();
   if (!PROVIDERS[provider]) throw Object.assign(new Error('provider must be "openai" or "openrouter"'), {status: 400});
   if (!b.key || !b.model) throw Object.assign(new Error('key and model are required'), {status: 400});
-  if (apiAgents.size >= MAX_API_AGENTS) throw Object.assign(new Error('The arena is running as many API players as it can right now. Try again shortly.'), {status: 429});
-  const chk = await checkKey(provider, b.key);
-  if (!chk.ok) throw Object.assign(new Error(chk.error), {status: 400});
+  const full = () => Object.assign(new Error('The arena is running as many API players as it can right now. Try again shortly.'), {status: 429});
+  if (apiAgents.size >= MAX_API_AGENTS) throw full();
+  // Hold a slot while the key is checked, so a burst cannot overshoot the cap.
+  const slot = {};
+  apiAgents.add(slot);
   let match = null;
-  const agent = new ApiAgent({
+  let agent;
+  try {
+    const chk = await checkKey(provider, b.key);
+    if (!chk.ok) throw Object.assign(new Error(chk.error), {status: 400});
+    agent = buildAgent();
+    apiAgents.add(agent);
+  } finally { apiAgents.delete(slot); }
+  function buildAgent() { return new ApiAgent({
     provider, key: b.key, model: b.model, effort: b.effort || null,
-    call: (name, args) => runTool(arena, name, args, {client: {name: `arena-api/${provider}`, via: 'arena-api'}, verified: {provider}}),
+    call: (name, args, opts) => runTool(arena, name, args, {client: {name: `arena-api/${provider}`, via: 'arena-api'}, verified: {provider}, noWait: !!opts?.noWait}),
     onUsage: (usage, served) => {
       try {
         match ||= arena.matchFor(agent.seat);
@@ -43,9 +60,8 @@ async function startApiAgent(arena, b) {
         seat.api = {provider, requested: b.model, served, calls: usage.calls, input: usage.input, output: usage.output, cost: usage.cost};
       } catch {}
     },
-  });
-  apiAgents.add(agent);
-  const join = {model: b.model, model_source: 'user', owner: b.owner || undefined};
+  }); }
+  const join = {model: b.model, model_source: 'user', owner: b.owner || undefined, key: b.player_key || undefined};
   const mode = b.mode || 'ladder';
   if (mode === 'new') join.room = 'new';
   else if (mode === 'room') join.room = b.room;
@@ -57,13 +73,43 @@ async function startApiAgent(arena, b) {
   return {room, provider, model: b.model};
 }
 
+// Instructions for an agent that was handed nothing but this URL. It needs no
+// setup: anything that can run curl can play. Agents that already have the
+// vgc-arena MCP tools are told to use those instead.
+export function goText(base, room) {
+  const code = room ? String(room).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) : '';
+  const how = code === 'NEW' ? ', "room": "new"' : code ? `, "room": "${code}"` : '';
+  const what = code === 'NEW' ? 'open a private room (tell your user its code)' : code ? `join room ${code}` : 'be paired with the next player to arrive (a built-in bot steps in if nobody comes within a few minutes)';
+  return `VGC ARENA — you have been asked to play one best-of-3 Pokémon match against another AI, on your own, to the end.
+
+If you have tools named vgc-arena (arena_join, turn_submit, …), use them: call arena_join with your model id${how ? ` and${how.slice(1)}` : ''}, then follow each reply.
+
+Otherwise play with curl. Every action is one POST that returns plain text telling you what to do next:
+
+  curl -s '${base}/api/tools/TOOL?plain=1' -H 'content-type: application/json' -d 'JSON'
+
+1. Join. You will ${what}:
+  curl -s '${base}/api/tools/arena_join?plain=1' -H 'content-type: application/json' -d '{"model": "<your exact model id, from your system prompt>", "model_source": "system_prompt"${how}}'
+   The reply gives you a SEAT TOKEN, a watch link for your user, the rules, and your first question.
+2. Answer. Each reply ends with the question, its legal answers, and the exact tool and JSON to send (draft_answer, preview_submit, turn_submit). Add "seat": "<your token>" to every call.
+3. Wait. When a reply says you are waiting, call arena_wait with your seat (it holds up to 40 s) and repeat.
+4. Stop only when a reply says MATCH FINISHED. Then tell your user the result and the watch link.
+
+Lookups while you play (same curl, add your seat): pokemon, search_pokemon, move, search_moves, item, search_items, ability, calc. arena_state shows your current question again. Do not read anything else from this server during the match: other pages show what spectators see.
+`;
+}
+
+// The address agents should use: the configured public one, else whatever
+// host this request came in on (a laptop).
+const baseUrl = req => (process.env.VGC_PUBLIC_URL ? PUBLIC_URL : `http://${req.headers.host || 'localhost'}`);
+
 function clientFrom(req, mcpClient) {
   let fwd = {};
   try { fwd = JSON.parse(req.headers['x-vgc-client'] || '{}'); } catch {}
   return {
     name: mcpClient?.name || fwd.name || '',
     version: mcpClient?.version || fwd.version || '',
-    via: fwd.via || (mcpClient ? 'mcp-http' : 'http'),
+    via: CLIENT_VIA.has(fwd.via) ? fwd.via : mcpClient ? 'mcp-http' : 'http',
     userAgent: String(req.headers['user-agent'] || '').slice(0, 200),
   };
 }
@@ -76,7 +122,7 @@ function archivedView(art) {
   }
   return {
     id: art.id, room: art.room || null, label: art.label, phase: 'finished', createdAt: art.createdAt, finishedAt: art.finishedAt, format: art.format, bestOf: art.bestOf,
-    score: art.score, winner: art.winner, endReason: art.endReason, archived: true,
+    score: art.score, winner: art.winner, endReason: art.endReason, awardedGames: (art.awardedGames || []).length, archived: true,
     players: ['p1', 'p2'].map(s => art.players[s] && {side: s, name: art.players[s].name, model: art.players[s].model, modelName: art.players[s].identity?.name,
       effort: art.players[s].identity?.effort || null, provider: art.players[s].identity?.provider, owner: art.players[s].owner, harness: art.players[s].harness, flags: art.players[s].flags, teamSubmitted: true}),
     sheets,
@@ -123,7 +169,10 @@ export function createServer({arena = new Arena()} = {}) {
 
   async function body(req) {
     const chunks = [];
-    for await (const c of req) chunks.push(c);
+    let size = 0;
+    // Past the limit the rest is read and dropped, so the refusal can still be sent.
+    for await (const c of req) { size += c.length; if (size <= MAX_BODY_BYTES) chunks.push(c); }
+    if (size > MAX_BODY_BYTES) throw Object.assign(new Error(`Request body too large (limit ${Math.round(MAX_BODY_BYTES / 1024)} KB).`), {status: 413});
     const raw = Buffer.concat(chunks).toString('utf8');
     if (!raw) return {};
     try { return JSON.parse(raw); } catch { throw Object.assign(new Error('Body must be JSON'), {status: 400}); }
@@ -163,6 +212,10 @@ export function createServer({arena = new Arena()} = {}) {
         return;
       }
 
+      // The whole onboarding, as text an agent can read: "curl <arena>/go and follow it".
+      // /go joins the ladder (two agents sent here are paired); /go/K7QX joins that room; /go/new opens one.
+      if (parts[0] === 'go') return send(res, 200, goText(baseUrl(req), parts[1]), 'text/plain; charset=utf-8');
+
       // Short share links: /r/K7QX
       if (parts[0] === 'r' && parts[1]) {
         res.writeHead(302, {location: `/#/room/${encodeURIComponent(parts[1].toUpperCase())}`});
@@ -174,7 +227,9 @@ export function createServer({arena = new Arena()} = {}) {
         if (a === 'info') return send(res, 200, {harness: HARNESS_VERSION, format: FORMAT_ID, showdownCommit: SHOWDOWN_COMMIT, tools: TOOLS.map(t => t.name), models: listModels()});
         if (a === 'tools' && b && req.method === 'POST') {
           const args = await body(req);
-          return send(res, 200, {text: await runTool(arena, b, args, {client: clientFrom(req)})});
+          const text = await runTool(arena, b, args, {client: clientFrom(req), noWait: q.nowait === '1'});
+          // ?plain=1: the text itself, for an agent reading curl output.
+          return q.plain === '1' ? send(res, 200, `${text}\n`, 'text/plain; charset=utf-8') : send(res, 200, {text});
         }
         if (a === 'stats') {
           const opts = {by: q.by || 'pilot', group: q.group || 'model', includeUnlisted: q.unlisted === '1'};
@@ -192,6 +247,14 @@ export function createServer({arena = new Arena()} = {}) {
             if (r?.data) orModels = {at: Date.now(), data: r.data.filter(m => (m.supported_parameters || []).includes('tools')).map(m => ({id: m.id, name: m.name, reasoning: (m.supported_parameters || []).includes('reasoning')}))};
           }
           return send(res, 200, orModels.data || []);
+        }
+        // The site's Play button: an empty private room and the line to paste into each agent.
+        if (a === 'rooms' && !b && req.method === 'POST') {
+          const open = [...arena.matches.values()].filter(m => m.phase === 'waiting' && !m.seats.p1).length;
+          if (open >= MAX_OPEN_ROOMS) return send(res, 429, {error: 'Too many open rooms right now. Try again in a minute.'});
+          const m = arena.createMatch({label: 'private room', reserved: true, createdBy: 'site'});
+          const go = `${baseUrl(req)}/go/${m.room}`;
+          return send(res, 200, {room: m.room, go, paste: `Play VGC Arena: run  curl -s ${go}  and follow it.`});
         }
         if (a === 'rooms' && b) {
           const code = b.toUpperCase();
@@ -276,5 +339,7 @@ if (process.argv[1]?.endsWith('server.mjs')) {
     console.log(`  site:       http://${host}:${port}/`);
     console.log(`  MCP (HTTP): http://${host}:${port}/mcp`);
     console.log(`  data:       ${server.arena.artifactsDir}`);
+    console.log(`\nTo start a battle, paste this into each agent (Claude Code, Codex, anything with a shell):`);
+    console.log(`  Play VGC Arena: run  curl -s http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/go  and follow it.`);
   });
 }

@@ -119,6 +119,7 @@ function speedFacts(battle, mine, theirs, known = {}) {
   }
   all.sort((a, b) => tr ? a.hi - b.hi : b.lo - a.lo);
   rows.push(`Effective Speed now (all modifiers; opponent = range over legal spreads, narrowed by move order seen): ${all.map(x => `${x.label} ${x.lo === x.hi ? x.lo : `${x.lo}–${x.hi}`}${x.note || ''}`).join(' · ')}`);
+  const pairs = [];
   for (const m of mine) {
     const s = effectiveSpeed(m);
     for (const t of theirs) {
@@ -128,9 +129,11 @@ function speedFacts(battle, mine, theirs, known = {}) {
       else if (s < lo) verdict = tr ? `you move first (Trick Room)` : `they move first`;
       else if (lo === hi) verdict = `SPEED TIE (${s}) — random`;
       else verdict = `UNCERTAIN (their ${lo}–${hi} contains your ${s})`;
-      rows.push(`your ${speciesName(m)} vs their ${speciesName(t)}: ${verdict}`);
+      pairs.push([`your ${speciesName(m)} vs their ${speciesName(t)}`, verdict]);
     }
   }
+  if (pairs.length > 1 && pairs.every(([, v]) => v === pairs[0][1])) rows.push(`every pairing: ${pairs[0][1]}`);
+  else for (const [who, verdict] of pairs) rows.push(`${who}: ${verdict}`);
   return rows;
 }
 
@@ -437,7 +440,7 @@ function menuText(menu, sheetFor) {
   ex.push('"reason": "<optional, one sentence>"');
   L.push('', `ANSWER with turn_submit: {${ex.join(', ')}}`);
   const notes = [];
-  if (menu.predict.length) notes.push(`predictions: for each foe, one of its sheet moves or "switch", with your confidence 0–1 (scored against what they chose)`);
+  if (menu.predict.length) notes.push(`predictions: for each foe, one of its sheet moves or "switch", with your confidence 0–1 (scored against what they chose; a missing one never blocks your move)`);
   notes.push('actions: one option ID per slot');
   if (menu.megaSlots.length) notes.push(`mega: ${menu.megaSlots.join(' or ')} to Mega Evolve that slot this turn, else null`);
   notes.push('reason: optional, one sentence');
@@ -599,8 +602,6 @@ export function renderObservation(game, sideId, ctx) {
       }
     }
   }
-  const think = ctx.think?.(options.kind === 'move' ? 'move' : options.slots.some(s => s.pivot) ? 'pivot' : 'replace');
-  if (think) L.push('', think);
   L.push(...menuText(menu, foeSheet));
   return {text: L.join('\n'), options, menu, schema: turnSchema(menu, foeSheet)};
 }

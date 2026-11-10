@@ -7,9 +7,9 @@ import {dex, toID, FORMAT_ID, SHOWDOWN_COMMIT} from './showdown.mjs';
 import {validateTeam, openSheet, openSheetText, exportTeam, parseTeam} from './dex-tools.mjs';
 import {Game, describeLines} from './game.mjs';
 import {renderObservation, choiceFromAnswer, predictionEnum} from './observation.mjs';
-import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION, thinkText} from './briefing.mjs';
+import {BRIEFING, TEAMBUILD_TEXT, HARNESS_VERSION} from './briefing.mjs';
 import {resolveModel, connectionPath} from './models.mjs';
-import {newDraft, setSlot, boardText, lockCheck, boardSummary} from './draft.mjs';
+import {newDraft, setSlot, boardText, lockCheck, boardSummary, SET_FIELDS} from './draft.mjs';
 import {question, questionText} from './guided.mjs';
 import {watchSpeedOrder, applySpeedConstraints} from './speed-infer.mjs';
 import {displayName, displayNames, sheetDex, teamName, opponentActions, rangesLine, chosenLabel, predictionHit} from './match-text.mjs';
@@ -68,6 +68,8 @@ export class Match extends EventEmitter {
     this.winner = null;
     this.finishedAt = null;
     this.endReason = null;
+    // Games given to the opponent without being played, when a side forfeits the match.
+    this.awarded = [];
     this.log('match created');
   }
 
@@ -77,7 +79,7 @@ export class Match extends EventEmitter {
 
   // ------------------------------------------------------------ seats
   // identity: from models.resolveModel; client: what the transport reported.
-  join({name, model: modelRaw, identity, harness, client, owner, ownerVerified, flags, detectedHarness}) {
+  join({name, model: modelRaw, identity, harness, client, owner, ownerVerified, flags, detectedHarness, builtin = false}) {
     identity ||= resolveModel(modelRaw);
     const side = SIDES.find(s => !this.seats[s]);
     if (!side) throw new Error('Match is full.');
@@ -87,7 +89,8 @@ export class Match extends EventEmitter {
       token, side, name: String(name || identity?.name || side).slice(0, 40), model, identity,
       harness: String(harness || detectedHarness || '').slice(0, 80), client: client || {}, detectedHarness: detectedHarness || null,
       // How this seat is driven (mcp, api, cli, http, builtin): the leaderboard can split on it.
-      path: connectionPath(harness || detectedHarness, client),
+      builtin: !!builtin,
+      path: connectionPath(harness || detectedHarness, client, builtin),
       owner: String(owner || '').slice(0, 60), ownerVerified: !!ownerVerified, flags: flags || [],
       joinedAt: new Date().toISOString(), waitingSince: Date.now(),
       team: null, teamText: null, teamPlan: null, sheet: null, teamAttempts: 0, draft: newDraft(),
@@ -208,15 +211,6 @@ export class Match extends EventEmitter {
     return view.lastObs;
   }
 
-  // A checklist in full the first time this seat meets that kind of decision,
-  // then as a one-line reminder.
-  think(side, kind) {
-    const seen = this.seats[side].thinkShown ||= new Set();
-    const full = !seen.has(kind);
-    seen.add(kind);
-    return thinkText(kind, full);
-  }
-
   sheetFor(side, species) {
     const base = dex.species.get(species);
     return this.seats[side].sheet.find(s => [base.name, base.baseSpecies].some(n => toID(n) === toID(s.species)));
@@ -232,7 +226,7 @@ export class Match extends EventEmitter {
     if (d.error) return d;
     const draft = d.seat.draft;
     const q = question(draft);
-    const need = {concept: ['concept'], species: ['species'], set: ['ability', 'item', 'nature', 'sp', 'moves'], lock: ['team_plan']}[q.step];
+    const need = {concept: ['concept'], species: ['species'], set: q.fields, lock: ['team_plan']}[q.step];
     const missing = need.filter(k => args[k] === undefined || args[k] === null || args[k] === '');
     if (missing.length) return {error: `This question (${q.title}) needs: ${missing.join(', ')}.`, question: q};
     let r;
@@ -254,7 +248,18 @@ export class Match extends EventEmitter {
       }
       this.emit('change');
       r = {ok: true};
-    } else r = this.draftSet(token, {slot: q.slot, ...Object.fromEntries(need.map(k => [k, args[k]]))});
+    } else {
+      // Field by field: what is legal goes on the board, what is not is
+      // reported, and the question comes back asking only for the rest.
+      const kept = [], errors = [];
+      for (const k of SET_FIELDS) {
+        if (args[k] === undefined || args[k] === null || args[k] === '') continue;
+        const res = setSlot(draft, {slot: q.slot, [k]: args[k]});
+        if (res.error) errors.push(res.error); else kept.push(k);
+      }
+      this.emit('change');
+      r = errors.length ? {error: errors.join(' '), kept} : {ok: true};
+    }
     if (r.error) return {...r, question: q};
     return {ok: true, locked: q.step === 'lock'};
   }
@@ -279,7 +284,7 @@ export class Match extends EventEmitter {
   guidedText(token) {
     const side = this.sideOf(token);
     const draft = this.seats[side].draft;
-    return `${boardText(draft)}\n\n${questionText(question(draft), kind => this.think(side, kind))}`;
+    return `${boardText(draft)}\n\n${questionText(question(draft))}`;
   }
 
   teamLock(token, {team_plan}) {
@@ -353,17 +358,17 @@ export class Match extends EventEmitter {
     const conv = choiceFromAnswer(obs.menu, payload);
     if (conv.error) return {error: conv.error};
     // Predictions: one per live foe, an option from its sheet (or "switch").
-    const predictions = [];
+    const predictions = [], missed = [];
     // Built-in bots don't predict, so prediction stats stay about models.
-    const predict = this.seats[side].harness === 'builtin' ? [] : obs.menu.predict;
+    const predict = this.seats[side].builtin ? [] : obs.menu.predict;
     for (const f of predict) {
       const p = payload.predictions?.[f.foe];
       const allowed = predictionEnum(this.sheetFor(other(side), f.species));
-      if (!p || typeof p !== 'object') return {error: `predictions.${f.foe} (${f.species}) is required: {"action": one of ${allowed.join(' | ')}, "confidence": 0–1}.`};
-      const action = allowed.find(x => toID(x) === toID(p.action));
-      if (!action) return {error: `predictions.${f.foe}.action must be one of: ${allowed.join(' | ')}.`};
-      const confidence = Number(p.confidence);
-      if (!(confidence >= 0 && confidence <= 1)) return {error: `predictions.${f.foe}.confidence must be a number from 0 to 1.`};
+      // A missing or malformed prediction is simply not recorded: the move
+      // is what the game needs, the prediction is a measurement.
+      const action = p && typeof p === 'object' ? allowed.find(x => toID(x) === toID(p.action)) : null;
+      const confidence = Number(p?.confidence);
+      if (!action || !(confidence >= 0 && confidence <= 1)) { missed.push(f.foe); continue; }
       predictions.push({foe: f.foe, species: f.species, action, confidence});
     }
     const turnBefore = game.turn;
@@ -372,7 +377,7 @@ export class Match extends EventEmitter {
     if (!res.ok) return {error: res.error};
     const record = {
       kind: obs.options.kind, turn: turnBefore,
-      payload: {ids: conv.ids, actions: conv.actions, predictions, reason: typeof payload.reason === 'string' ? clip(payload.reason) : null},
+      payload: {ids: conv.ids, actions: conv.actions, predictions, predictionsMissed: missed, reason: typeof payload.reason === 'string' ? clip(payload.reason) : null},
       choice: conv.choice, observation: obs.text,
     };
     this.recordDecision(side, record);
@@ -395,8 +400,14 @@ export class Match extends EventEmitter {
     return scope === 'game' ? this.forfeitGame(side) : this.forfeitSide(side);
   }
 
+  // Conceding the match concedes every game still needed to decide it: the
+  // game in progress, then unplayed games awarded to the opponent. Ratings are
+  // fitted per game, so a side that cannot build a team or walks away takes
+  // the same 0–2 it would have taken by losing on the field.
   forfeitSide(side, reason = 'forfeited') {
     if (this.phase === 'finished') return {error: 'Match already finished.'};
+    // Nobody to lose to: the room simply closes.
+    if (!this.seats[other(side)]) { this.abandon('the player left before an opponent joined'); return {ok: true}; }
     if (this.currentGame && !this.currentGame.ended) this.currentGame.forfeit(side);
     // The game in progress (battle or preview) is a loss for the forfeiter, not a tie.
     const g = this.game;
@@ -405,6 +416,10 @@ export class Match extends EventEmitter {
       g.forfeit = side;
       g.turns = g.game.turn || 0;
       this.score[other(side)]++;
+    }
+    while (this.score[other(side)] < this.winsNeeded) {
+      this.score[other(side)]++;
+      this.awarded.push({n: this.games.length + this.awarded.length + 1, winner: other(side), forfeit: side, awarded: true, turns: 0});
     }
     this.forfeitedBy = side;
     this.forfeitReason = reason;
@@ -493,7 +508,6 @@ export class Match extends EventEmitter {
     }
     const {seat, ...a} = args || {};
     const mon = t => { const l = String(t || '').trim().split('\n')[0].split('@')[0].trim(); const m = /\(([^)]+)\)/.exec(l); return (m && !/^[MF]$/.test(m[1]) ? m[1] : l.replace(/\(.*?\)/g, '')).trim(); };
-    const act = x => (x.switch ? `↻ ${x.switch}` : `${x.move}${x.target ? `→${x.target}` : ''}${x.mega ? ' ✦' : ''}`);
     const detail = {
       pokemon: () => a.name, move: () => a.name, item: () => a.name, ability: () => a.name,
       search_pokemon: () => Object.entries(a).map(([k, v]) => `${k} ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', '),
@@ -505,7 +519,8 @@ export class Match extends EventEmitter {
         : a.team_plan ? 'locks the team'
         : [a.item && `@ ${a.item}`, a.ability, a.nature, a.moves && [].concat(a.moves).join(', ')].filter(Boolean).join(' · ')),
       draft_revise: () => `slot ${a.slot}${a.species ? ` → ${a.species}` : ' reopened'}`,
-      turn_submit: () => (a.actions || []).map(act).join(' · '), arena_forfeit: () => 'forfeits',
+      // The choice itself stays sealed: the opponent may not have answered yet.
+      turn_submit: () => 'locks in the turn', arena_forfeit: () => 'forfeits',
     }[tool]?.() || '';
     // Pokémon this call was about, so the page can grow candidate cards.
     const speciesOf = {
@@ -620,9 +635,6 @@ export class Match extends EventEmitter {
     const sinceRaw = game.linesFor(side, view.cursor, end);
     const sinceText = describeLines(sinceRaw, side);
     const alerts = [];
-    if (view.history.length >= 3 && view.history.slice(-3).every(c => c === view.history.at(-1))) {
-      alerts.push('You have submitted the exact same actions three turns in a row. Make sure the situation still calls for it.');
-    }
     const opp = game.side(other(side));
     const theyMega = game.battle.log.some(l => l.startsWith(`|-mega|${other(side)}`));
     if (!theyMega) {
@@ -665,7 +677,6 @@ export class Match extends EventEmitter {
       oppSheet: this.seats[other(side)].sheet,
       oppSeen: view.oppSeen,
       oppSpeedBounds: this.speedBounds[other(side)],
-      think: kind => this.think(side, kind),
       alerts,
     });
     return obs;
@@ -702,7 +713,6 @@ export class Match extends EventEmitter {
       L.push('', `OPPONENT'S OPEN TEAM SHEET:`, openSheetText(opp.sheet));
       L.push('', 'Opponent stat ranges at level 50 (any legal spread):');
       for (const s of opp.sheet) L.push(`  ${s.species}: ${rangesLine(s.species)}`);
-      L.push('', this.think(side, 'preview'));
       L.push('', `ANSWER with preview_submit: {"bring": [4 of ${seat.team.map(s => `"${s.species}"`).join(', ')}], "game_plan": "…"}
   bring: the first two lead · game_plan: 2–3 sentences on leads, win condition and answers to their biggest threats${g.n > 1 ? ', and what you are changing from earlier games' : ''}`);
       return {...base, yourTurn: true, kind: 'preview', text: L.join('\n')};
@@ -754,7 +764,7 @@ export class Match extends EventEmitter {
     const finished = this.phase === 'finished';
     return {
       id: this.id, room: this.room, label: this.label, phase: this.phase, createdAt: this.createdAt, finishedAt: this.finishedAt,
-      format: FORMAT_ID, bestOf: this.bestOf, score: this.score, winner: this.winner, endReason: this.endReason,
+      format: FORMAT_ID, bestOf: this.bestOf, score: this.score, winner: this.winner, endReason: this.endReason, awardedGames: this.awarded.length,
       players: SIDES.map(s => this.seats[s] ? {side: s, name: this.seats[s].name, model: this.seats[s].model, modelName: this.seats[s].identity?.name, effort: this.seats[s].identity?.effort || null, provider: this.seats[s].identity?.provider, owner: this.seats[s].owner, harness: this.seats[s].harness, path: this.seats[s].path, flags: this.seats[s].flags, teamSubmitted: !!this.seats[s].team,
         rejections: this.rejections[s].length, timeouts: this.timeouts[s], deadline: this.deadline(s), api: this.seats[s].api || null} : null),
       abandoned: !!this.abandoned,
@@ -810,6 +820,7 @@ export class Match extends EventEmitter {
         teamText: this.seats[s].teamText, teamPlan: this.seats[s].teamPlan, teamHash: this.seats[s].teamHash, teamAttempts: this.seats[s].teamAttempts, timeouts: this.timeouts[s],
       }])),
       games: this.games.map(g => ({n: g.n, seed: g.seed, winner: g.winner, forfeit: g.forfeit || null, turns: g.game.turn, startedAt: g.startedAt, endedAt: g.endedAt, preview: g.preview, spectatorLog: g.spectatorLog, displayLog: this.spectatorLines(g.n).join('\n'), omniscientLog: g.omniscientLog})),
+      awardedGames: this.awarded,
       decisions: this.decisions,
       rejections: this.rejections,
       events: this.events,

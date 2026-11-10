@@ -415,6 +415,8 @@ function renderRail(rs) {
     const ok = v.phase === 'finished' ? sid !== 'waiting' : i <= liveIdx && (sid !== 'waiting' || v.phase === 'waiting');
     return `<button class="st ${i < liveIdx ? 'done' : i === liveIdx ? 'now' : ''} ${sid === sel ? 'sel' : ''}" data-s="${sid}" ${ok ? '' : 'disabled'}><i></i><span>${esc(label)}</span>${sub(sid) ? `<em>${esc(sub(sid))}</em>` : ''}</button>`;
   }).join('<b class="ln"></b>') + (v.phase !== 'finished' ? `<button class="golive ${rs.follow ? 'on' : ''}" data-s="live">● LIVE</button>` : '');
+  const cur = rail.querySelector('.st.sel') || rail.querySelector('.st.now');
+  if (cur) rail.scrollLeft = cur.offsetLeft - (rail.clientWidth - cur.offsetWidth) / 2;
   rail.querySelectorAll('button:not([disabled])').forEach(b => b.onclick = () => {
     if (b.dataset.s === 'live') { rs.follow = true; rs.seenSheets = true; }
     else {

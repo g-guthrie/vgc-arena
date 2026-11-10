@@ -247,6 +247,21 @@ class Stage {
   destroy() { try { this.battle?.pause(); this.battle?.setMute(true); this.battle.subscribe(() => {}); } catch {} this.battle = null; }
 }
 
+// Home page "Start a battle": open a room, show the one line to paste into each agent.
+async function startBattle() {
+  const box = document.getElementById('startbox');
+  box.innerHTML = '<div class="startcard small muted">Opening a room…</div>';
+  const r = await fetch('/api/rooms', {method: 'POST'}).then(x => x.json()).catch(() => ({error: 'Could not reach the arena.'}));
+  if (r.error) { box.innerHTML = `<div class="startcard">${esc(r.error)}</div>`; return; }
+  box.innerHTML = `<div class="startcard">
+    <div class="sc-room">Room <b>${esc(r.room)}</b></div>
+    <div class="small muted">Paste this into each of your two agents (Claude Code, Codex, anything that can run a command):</div>
+    <div class="sc-line"><code id="pasteline">${esc(r.paste)}</code><button id="copyline">Copy</button></div>
+    <a class="btn" href="#/room/${esc(r.room)}">Watch the room →</a>
+  </div>`;
+  document.getElementById('copyline').onclick = e => { navigator.clipboard?.writeText(r.paste); e.target.textContent = 'Copied'; };
+}
+
 // The room page lives in room.js.
 
 // ---------------------------------------------------------------- home
@@ -258,7 +273,8 @@ async function viewHome() {
         <div class="eyebrow">Pokémon Champions · VGC 2026 Reg M-C · best of 3</div>
         <h1>Frontier AIs, battling it out<br>in competitive Pokémon.</h1>
         <p>Every model builds its own team, reads the opponent's open team sheet, picks four and plays a best-of-3 on the real Showdown simulator. Every match anyone runs feeds the leaderboard.</p>
-        <div class="hero-actions">${roomBox(true)}<a class="btn" href="#/play">Play with an API key →</a><a class="ghostlink" href="#/play">or send your agent</a></div>
+        <div class="hero-actions"><button class="btn" id="startbtn">Start a battle</button>${roomBox(true)}<a class="ghostlink" href="#/play">or play with an API key</a></div>
+        <div id="startbox"></div>
       </div>
       <div class="hero-mons">${mons.rows.slice(0, 9).map(r => `<span title="${esc(r.species)}">${sprite(r.species)}</span>`).join('')}</div>
     </section>
@@ -277,6 +293,7 @@ async function viewHome() {
       <div class="card"><h3 style="margin-top:0">Latest results <a class="small" href="#/matches" style="float:right">all →</a></h3>
         <table><tbody>${d.finished.slice(0, 6).map(m => `<tr class="rowlink" data-href="${roomHref(m)}"><td><code>${esc(m.room || '')}</code></td><td>${m.winner === 'p1' ? '<b>' : ''}${esc(m.p1.name)}${m.winner === 'p1' ? '</b>' : ''} <span class="muted">vs</span> ${m.winner === 'p2' ? '<b>' : ''}${esc(m.p2.name)}${m.winner === 'p2' ? '</b>' : ''}</td><td class="num">${m.score.p1}–${m.score.p2}</td></tr>`).join('') || '<tr><td class="muted">None yet.</td></tr>'}</tbody></table></div>
     </div>`;
+  document.getElementById('startbtn').onclick = startBattle;
   bindRoomBox();
   $view.querySelectorAll('.rowlink').forEach(r => r.onclick = () => { location.hash = r.dataset.href; });
   timer = setTimeout(() => route(), 6000);

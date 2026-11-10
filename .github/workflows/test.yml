@@ -1,0 +1,28 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Cache the pinned simulator
+        uses: actions/cache@v4
+        with:
+          path: vendor/pokemon-showdown
+          key: showdown-${{ hashFiles('scripts/setup-showdown.sh') }}
+      - run: npm ci   # postinstall builds the simulator unless the cache restored it
+      - run: npm test
+      - run: npm run e2e
+      - name: MCP bridge end to end (starts the arena itself)
+        run: npm run e2e:mcp
+        env:
+          VGC_ARENA_URL: http://127.0.0.1:3197
+          VGC_ARTIFACTS: ${{ runner.temp }}/arena

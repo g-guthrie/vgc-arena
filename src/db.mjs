@@ -50,6 +50,8 @@ export class StatsDB {
     if (!cols('seats').includes('model_source')) this.db.exec('alter table seats add column model_source text');
     if (!cols('seats').includes('path')) this.db.exec('alter table seats add column path text');
     if (!cols('seats').includes('timeouts')) this.db.exec('alter table seats add column timeouts int');
+    // 1 = a game given to the opponent by a match forfeit; it was never played.
+    if (!cols('games').includes('awarded')) this.db.exec('alter table games add column awarded int default 0');
     this.version = 0;
   }
 
@@ -88,12 +90,13 @@ export class StatsDB {
         }
       }
       for (const g of art.games) {
-        ins(`insert or replace into games values (?,?,?,?)`, art.id, g.n, g.winner, g.turns);
+        ins(`insert or replace into games (match_id, n, winner, turns, awarded) values (?,?,?,?,0)`, art.id, g.n, g.winner, g.turns);
         for (const side of ['p1', 'p2']) {
           const bring = g.preview?.[side]?.bring || [];
           bring.forEach((sp, i) => ins(`insert or replace into brings values (?,?,?,?,?,?,?)`, art.id, g.n, side, dex.species.get(sp).name, i + 1, i < 2 ? 1 : 0, g.winner === side ? 1 : 0));
         }
       }
+      for (const g of art.awardedGames || []) ins(`insert or replace into games (match_id, n, winner, turns, awarded) values (?,?,?,0,1)`, art.id, g.n, g.winner);
       this.db.exec('commit');
     } catch (err) {
       this.db.exec('rollback');
